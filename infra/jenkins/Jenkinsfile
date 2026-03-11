@@ -83,6 +83,7 @@ pipeline {
 
     environment {
         TF_DIR                = "${WORKSPACE}/infra/terraform"
+        AWS_DEFAULT_REGION    = "us-east-1"
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
     }
@@ -103,7 +104,7 @@ pipeline {
 
         stage('Verify AWS Access') {
             steps {
-                sh 'aws sts get-caller-identity --region ${AWS_REGION}'
+                sh 'aws sts get-caller-identity'
             }
         }
 
@@ -114,18 +115,29 @@ pipeline {
                         ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ')
                         : ''
 
+                    def region      = params.AWS_REGION ?: 'us-east-1'
+                    def environment = params.ENVIRONMENT ?: 'dev'
+                    def imageTag    = params.IMAGE_TAG ?: 'latest'
+                    def targetUrl   = params.TARGET_URL ?: 'https://example.com'
+                    def duration    = params.TEST_DURATION ?: '60'
+                    def conns       = params.CONNECTIONS ?: '10'
+                    def users       = params.USERS ?: '0'
+                    def rate        = params.RATE ?: '0'
+                    def workers     = params.WORKER_COUNT ?: '2'
+                    def scenario    = params.SCENARIO_FILE ?: ''
+
                     writeFile file: "${env.TF_DIR}/jenkins.auto.tfvars", text: """
-aws_region         = "${params.AWS_REGION}"
-environment        = "${params.ENVIRONMENT}"
-container_image    = "ghcr.io/kurok/pywrkr:${params.IMAGE_TAG}"
-target_url         = "${params.TARGET_URL}"
-test_duration      = ${params.TEST_DURATION}
-connections        = ${params.CONNECTIONS}
-users              = ${params.USERS}
-rate               = ${params.RATE}
-worker_count       = ${params.WORKER_COUNT}
+aws_region         = "${region}"
+environment        = "${environment}"
+container_image    = "ghcr.io/kurok/pywrkr:${imageTag}"
+target_url         = "${targetUrl}"
+test_duration      = ${duration}
+connections        = ${conns}
+users              = ${users}
+rate               = ${rate}
+worker_count       = ${workers}
 thresholds         = [${thresholdList}]
-scenario_file      = "${params.SCENARIO_FILE}"
+scenario_file      = "${scenario}"
 enable_nat_gateway = false
 """
                 }
@@ -177,13 +189,13 @@ enable_nat_gateway = false
                         aws ecs wait services-stable \
                             --cluster ${env.ECS_CLUSTER} \
                             --services ${env.MASTER_SERVICE} \
-                            --region ${params.AWS_REGION}
+                            --region ${AWS_DEFAULT_REGION}
 
                         echo "Waiting for worker service to stabilize..."
                         aws ecs wait services-stable \
                             --cluster ${env.ECS_CLUSTER} \
                             --services ${env.WORKER_SERVICE} \
-                            --region ${params.AWS_REGION}
+                            --region ${AWS_DEFAULT_REGION}
 
                         echo "All services stable."
                     """
@@ -200,21 +212,21 @@ enable_nat_gateway = false
                             --cluster ${env.ECS_CLUSTER} \
                             --service ${env.MASTER_SERVICE} \
                             --force-new-deployment \
-                            --region ${params.AWS_REGION} \
+                            --region ${AWS_DEFAULT_REGION} \
                             --no-cli-pager
 
                         aws ecs update-service \
                             --cluster ${env.ECS_CLUSTER} \
                             --service ${env.WORKER_SERVICE} \
                             --force-new-deployment \
-                            --region ${params.AWS_REGION} \
+                            --region ${AWS_DEFAULT_REGION} \
                             --no-cli-pager
 
                         echo "Waiting for new deployment to stabilize..."
                         aws ecs wait services-stable \
                             --cluster ${env.ECS_CLUSTER} \
                             --services ${env.MASTER_SERVICE} ${env.WORKER_SERVICE} \
-                            --region ${params.AWS_REGION}
+                            --region ${AWS_DEFAULT_REGION}
                     """
                 }
             }
@@ -239,7 +251,7 @@ enable_nat_gateway = false
                         aws logs filter-log-events \
                             --log-group-name "${masterLogGroup}" \
                             --start-time ${startTime} \
-                            --region ${params.AWS_REGION} \
+                            --region ${AWS_DEFAULT_REGION} \
                             --no-cli-pager \
                             --output text \
                             --query 'events[*].message' \
@@ -250,7 +262,7 @@ enable_nat_gateway = false
                         aws logs filter-log-events \
                             --log-group-name "${workerLogGroup}" \
                             --start-time ${startTime} \
-                            --region ${params.AWS_REGION} \
+                            --region ${AWS_DEFAULT_REGION} \
                             --no-cli-pager \
                             --output text \
                             --query 'events[*].message' \
@@ -287,14 +299,14 @@ enable_nat_gateway = false
                                 --cluster ${env.ECS_CLUSTER} \
                                 --service ${env.WORKER_SERVICE} \
                                 --desired-count 0 \
-                                --region ${params.AWS_REGION} \
+                                --region ${AWS_DEFAULT_REGION} \
                                 --no-cli-pager
 
                             aws ecs update-service \
                                 --cluster ${env.ECS_CLUSTER} \
                                 --service ${env.MASTER_SERVICE} \
                                 --desired-count 0 \
-                                --region ${params.AWS_REGION} \
+                                --region ${AWS_DEFAULT_REGION} \
                                 --no-cli-pager
 
                             echo "Services scaled to 0. Infrastructure remains for next run."
