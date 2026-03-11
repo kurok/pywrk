@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ from pywrkr.config import (
     DEFAULT_TIMEOUT,
     AutofindConfig,
     BenchmarkConfig,
+    SSLConfig,
     Threshold,
     load_scenario,
 )
@@ -31,6 +33,8 @@ from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
 from pywrkr.traffic_profiles import parse_traffic_profile
 from pywrkr.workers import run_autofind, run_benchmark, run_user_simulation
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +83,10 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
                         help="Verbosity level: 2=warnings, 3=status codes, 4=headers+body info")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help=f"Request timeout in seconds (default: {DEFAULT_TIMEOUT})")
+    parser.add_argument("--ssl-verify", action="store_true", default=False,
+                        help="Verify SSL certificates (default: off, or set PYWRKR_SSL_VERIFY=1)")
+    parser.add_argument("--ca-bundle", default=None, metavar="FILE",
+                        help="Path to CA bundle for SSL verification (or set PYWRKR_CA_BUNDLE)")
     parser.add_argument("-R", "--random-param", action="store_true", default=False,
                         help="Append a unique random query parameter (_cb=<uuid>) to each request "
                              "URL to bypass HTTP caching")
@@ -356,6 +364,14 @@ def _parse_and_validate_args(
     headers = dict(args.headers)
     keepalive = not args.no_keepalive
 
+    # --- Build SSL config from CLI args + environment ---
+    from pywrkr.config import SSLConfig
+    env_ssl = SSLConfig.from_env()
+    ssl_config = SSLConfig(
+        verify=args.ssl_verify or env_ssl.verify,
+        ca_bundle=args.ca_bundle or env_ssl.ca_bundle,
+    )
+
     # --- Parse structured CLI values that need validation ---
     tags: dict[str, str] = {}
     for tag_str in args.tags:
@@ -383,6 +399,7 @@ def _parse_and_validate_args(
         body=body,
         timeout_sec=args.timeout,
         keepalive=keepalive,
+        ssl_config=ssl_config,
         basic_auth=args.basic_auth,
         cookies=args.cookies,
         verify_content_length=args.verify_length,
@@ -463,6 +480,7 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
             random_param=args.random_param,
             timeout_sec=args.timeout,
             keepalive=keepalive,
+            ssl_config=config.ssl_config,
             json_output=args.json,
         )
         asyncio.run(run_autofind(af_config))
@@ -507,6 +525,10 @@ def _run_har_import(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """CLI entry point for pywrkr."""
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s [%(name)s] %(message)s",
+    )
     # Intercept subcommands before the main parser (which has a positional
     # `url` argument that would swallow the subcommand name).
     if len(sys.argv) > 1 and sys.argv[1] == "har-import":

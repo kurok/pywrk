@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Traffic shaping profiles and rate limiter for pywrkr."""
 
 import asyncio
@@ -378,7 +380,10 @@ class RateLimiter:
         self.waits: int = 0  # how many times we actually slept
 
     def _current_rate(self, now: float) -> float:
-        """Return the target rate at time *now*."""
+        """Return the target RPS at the given monotonic time.
+
+        Priority: traffic_profile > linear ramp > fixed start_rate.
+        """
         # Traffic profile takes precedence
         if self.traffic_profile is not None:
             if self._start_time is None:
@@ -395,7 +400,12 @@ class RateLimiter:
         return self.start_rate
 
     async def acquire(self) -> None:
-        """Wait until the next request is allowed under the rate limit."""
+        """Wait until the next request is allowed under the rate limit.
+
+        Uses a token bucket approach: calculates the required interval between
+        requests based on the current rate, and sleeps if the next request
+        would arrive too early. Thread-safe via asyncio.Lock.
+        """
         async with self._lock:
             now = time.monotonic()
             if self._start_time is None:

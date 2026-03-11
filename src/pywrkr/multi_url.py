@@ -1,5 +1,6 @@
 """Multi-URL testing mode for pywrkr."""
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from pywrkr.reporting import (
     write_json_output,
 )
 from pywrkr.workers import run_benchmark, run_user_simulation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,9 +74,9 @@ async def run_multi_url(
 
     for i, entry in enumerate(url_entries, 1):
         sep = "\u2500" * 70
-        print(f"\n{sep}")
-        print(f"  Endpoint {i}/{len(url_entries)}: {entry.method} {entry.url}")
-        print(f"{sep}\n")
+        logger.info("\n%s", sep)
+        logger.info("  Endpoint %s/%s: %s %s", i, len(url_entries), entry.method, entry.url)
+        logger.info("%s\n", sep)
 
         # Clone config with this URL and method
         config = BenchmarkConfig(
@@ -125,6 +128,6 @@ async def run_multi_url(
     if base_config.json_output:
         data = build_multi_url_json(results)
         write_json_output(base_config.json_output, data)
-        print(f"  JSON results written to: {base_config.json_output}")
+        logger.info("  JSON results written to: %s", base_config.json_output)
 
     return results

@@ -1,9 +1,12 @@
 """Data structures and scenario loading for pywrkr."""
 
 import json
+import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default constants
@@ -20,6 +23,27 @@ DEFAULT_AUTOFIND_STEP_DURATION = 30.0
 DEFAULT_AUTOFIND_START_USERS = 10
 DEFAULT_AUTOFIND_MAX_USERS = 10000
 DEFAULT_AUTOFIND_STEP_MULTIPLIER = 2.0
+
+
+@dataclass
+class SSLConfig:
+    """SSL/TLS configuration for HTTP connections."""
+    verify: bool = False  # Whether to verify SSL certificates
+    ca_bundle: str | None = None  # Path to CA bundle file
+
+    @classmethod
+    def from_env(cls) -> "SSLConfig":
+        """Create SSLConfig from environment variables.
+
+        Environment variables:
+            PYWRKR_SSL_VERIFY: Set to '1' or 'true' to enable SSL verification.
+            PYWRKR_CA_BUNDLE: Path to a custom CA bundle file.
+        """
+        import os
+        verify_env = os.environ.get("PYWRKR_SSL_VERIFY", "").lower()
+        verify = verify_env in ("1", "true", "yes")
+        ca_bundle = os.environ.get("PYWRKR_CA_BUNDLE") or None
+        return cls(verify=verify, ca_bundle=ca_bundle)
 
 
 @dataclass
@@ -101,6 +125,7 @@ class BenchmarkConfig:
     html_report: str | None = None  # file path for interactive HTML report
     # Autofind mode: suppress output when used as a sub-step
     _quiet: bool = False
+    ssl_config: SSLConfig = field(default_factory=SSLConfig)
     # Observability export
     tags: dict[str, str] = field(default_factory=dict)
     otel_endpoint: str | None = None
@@ -133,6 +158,7 @@ class AutofindConfig:
     random_param: bool = False
     timeout_sec: float = DEFAULT_TIMEOUT
     keepalive: bool = True
+    ssl_config: SSLConfig = field(default_factory=SSLConfig)
     json_output: str | None = None
 
 
@@ -184,7 +210,7 @@ def load_scenario(path: str) -> Scenario:
         try:
             import yaml
         except ImportError:
-            raise ImportError("pyyaml is required for YAML scenario files. Install with: pip install pyyaml")
+            raise ImportError("pyyaml is required for YAML scenario files. Install with: pip install pyyaml") from None
         data = yaml.safe_load(content)
     elif ext == ".json":
         data = json.loads(content)
@@ -198,7 +224,7 @@ def load_scenario(path: str) -> Scenario:
                 data = yaml.safe_load(content)
             except ImportError:
                 raise ValueError(f"Could not parse scenario file: {path}. "
-                                 f"Not valid JSON, and pyyaml is not installed for YAML parsing.")
+                                 f"Not valid JSON, and pyyaml is not installed for YAML parsing.") from None
 
     if not isinstance(data, dict):
         raise ValueError(f"Scenario file must contain a JSON/YAML object, got {type(data).__name__}")

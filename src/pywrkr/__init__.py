@@ -12,6 +12,7 @@ __all__ = [
     "ScenarioStep",
     "Scenario",
     "load_scenario",
+    "SSLConfig",
     # pywrkr.traffic_profiles
     "TrafficProfile",
     "SineProfile",
@@ -54,6 +55,9 @@ __all__ = [
     # pywrkr.workers
     "LiveDashboard",
     "make_url",
+    "_build_request_headers",
+    "_merge_all_stats",
+    "_create_ssl_context",
     "create_trace_config",
     "aggregate_breakdowns",
     "worker",
@@ -106,6 +110,7 @@ from pywrkr.config import (
     StepResult,
     ScenarioStep,
     Scenario,
+    SSLConfig,
     load_scenario,
 )
 
@@ -155,6 +160,9 @@ from pywrkr.reporting import (
 from pywrkr.workers import (
     LiveDashboard,
     make_url,
+    _build_request_headers,
+    _merge_all_stats,
+    _create_ssl_context,
     create_trace_config,
     aggregate_breakdowns,
     worker,

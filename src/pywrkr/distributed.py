@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import sys
 import time
 
@@ -20,6 +21,8 @@ from pywrkr.reporting import (
     print_threshold_results,
 )
 from pywrkr.workers import run_benchmark, run_user_simulation
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize_config(config: BenchmarkConfig) -> dict:
@@ -147,7 +150,7 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
 
 async def run_master(config: BenchmarkConfig, host: str, port: int, expect_workers: int) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results."""
-    print(f"Master: listening on {host}:{port}, waiting for {expect_workers} worker(s)...")
+    logger.info("Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers)
 
     worker_connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
     ready_event = asyncio.Event()
@@ -155,8 +158,8 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
-        print(f"  Worker connected: {addr[0]}:{addr[1]} "
-              f"({len(worker_connections)}/{expect_workers})")
+        logger.info("  Worker connected: %s:%s (%s/%s)",
+                    addr[0], addr[1], len(worker_connections), expect_workers)
         if len(worker_connections) >= expect_workers:
             ready_event.set()
 
@@ -166,18 +169,18 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=300)
         except asyncio.TimeoutError:
-            print(f"Master: timed out waiting for workers "
-                  f"({len(worker_connections)}/{expect_workers} connected)")
+            logger.error("Master: timed out waiting for workers (%s/%s connected)",
+                        len(worker_connections), expect_workers)
             for _, w in worker_connections:
                 w.close()
             return
 
-        print(f"\nMaster: all {expect_workers} workers connected. Distributing config...")
+        logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
         for _, writer in worker_connections:
             await _send_msg(writer, {"type": "config", "config": config_data})
 
-        print("Master: benchmark running on all workers...")
+        logger.info("Master: benchmark running on all workers...")
 
         # Collect results
         all_stats: list[WorkerStats] = []
@@ -188,17 +191,17 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
                     ws = _deserialize_stats(msg["stats"])
                     all_stats.append(ws)
                     addr = writer.get_extra_info("peername")
-                    print(f"  Worker {addr[0]}:{addr[1]} finished: "
-                          f"{ws.total_requests:,} requests, {ws.errors} errors")
+                    logger.info("  Worker %s:%s finished: %s requests, %s errors",
+                               addr[0], addr[1], f"{ws.total_requests:,}", ws.errors)
                 else:
-                    print(f"  Worker {i}: unexpected message type: {msg.get('type')}")
-            except Exception as e:
-                print(f"  Worker {i}: error receiving results: {e}")
+                    logger.error("  Worker %s: unexpected message type: %s", i, msg.get("type"))
+            except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+                logger.error("  Worker %s: error receiving results: %s", i, e)
             finally:
                 writer.close()
 
     if not all_stats:
-        print("Master: no results received from workers.")
+        logger.error("Master: no results received from workers.")
         return
 
     # Merge and report
@@ -211,7 +214,7 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
     # Use actual duration from config for reporting
     actual_duration = config.duration or 10.0
 
-    print(f"\nMaster: {len(all_stats)} worker(s) reported. Merged results:\n")
+    logger.info("Master: %s worker(s) reported. Merged results:", len(all_stats))
     # Override _quiet for printing
     report_config = BenchmarkConfig(
         url=config.url,
@@ -250,20 +253,20 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
 
 async def run_worker_node(master_host: str, master_port: int) -> None:
     """Run in worker mode: connect to master, receive config, run benchmark, send results."""
-    print(f"Worker: connecting to master at {master_host}:{master_port}...")
+    logger.info("Worker: connecting to master at %s:%s...", master_host, master_port)
 
     reader, writer = await asyncio.open_connection(master_host, master_port)
-    print("Worker: connected to master, waiting for config...")
+    logger.info("Worker: connected to master, waiting for config...")
 
     msg = await _recv_msg(reader)
     if msg.get("type") != "config":
-        print(f"Worker: unexpected message type: {msg.get('type')}")
+        logger.error("Worker: unexpected message type: %s", msg.get("type"))
         writer.close()
         return
 
     config = _deserialize_config(msg["config"])
-    print(f"Worker: received config. Target: {config.url}")
-    print(f"Worker: starting benchmark...")
+    logger.info("Worker: received config. Target: %s", config.url)
+    logger.info("Worker: starting benchmark...")
 
     # Run the appropriate benchmark
     if config.users is not None:
@@ -271,10 +274,10 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
     else:
         stats, _ = await run_benchmark(config)
 
-    print(f"Worker: benchmark complete. {stats.total_requests:,} requests, "
-          f"{stats.errors} errors")
+    logger.info("Worker: benchmark complete. %s requests, %s errors",
+                f"{stats.total_requests:,}", stats.errors)
 
     # Send results back to master
     await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})
     writer.close()
-    print("Worker: results sent to master. Done.")
+    logger.info("Worker: results sent to master. Done.")

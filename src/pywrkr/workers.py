@@ -11,6 +11,7 @@ import statistics
 import sys
 import time
 import uuid
+import logging
 from urllib.parse import urlparse
 
 import aiohttp
@@ -35,6 +36,8 @@ from pywrkr.reporting import (
     write_json_output,
     _format_latency_short,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +182,66 @@ def make_url(url: str, random_param: bool) -> str:
         return url
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}_cb={uuid.uuid4().hex}"
+
+
+def _build_request_headers(config: BenchmarkConfig) -> dict[str, str]:
+    """Build the common request headers from benchmark config.
+
+    Assembles headers from config.headers, adds Basic auth and cookie
+    headers if configured. Returns a new dict each call to avoid
+    shared mutable state between workers.
+    """
+    headers = dict(config.headers)
+    if config.basic_auth:
+        encoded = base64.b64encode(config.basic_auth.encode()).decode()
+        headers["Authorization"] = f"Basic {encoded}"
+    if config.cookies:
+        headers["Cookie"] = "; ".join(config.cookies)
+    return headers
+
+
+def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
+    """Merge a list of WorkerStats into a single aggregated WorkerStats.
+
+    Combines all counters, latencies, timelines, and breakdowns from
+    multiple workers into one unified stats object.
+    """
+    merged = WorkerStats()
+    for ws in all_stats:
+        merged.total_requests += ws.total_requests
+        merged.total_bytes += ws.total_bytes
+        merged.errors += ws.errors
+        merged.content_length_errors += ws.content_length_errors
+        merged.latencies.extend(ws.latencies)
+        merged.rps_timeline.extend(ws.rps_timeline)
+        for k, v in ws.error_types.items():
+            merged.error_types[k] += v
+        for k, v in ws.status_codes.items():
+            merged.status_codes[k] += v
+        for k, v in ws.step_latencies.items():
+            merged.step_latencies[k].extend(v)
+        merged.breakdowns.extend(ws.breakdowns)
+    return merged
+
+
+def _create_ssl_context(config: BenchmarkConfig) -> "ssl.SSLContext | None":
+    """Create an SSL context based on the benchmark configuration.
+
+    Returns None for plain HTTP. For HTTPS, creates a context with
+    certificate verification controlled by config.ssl_config.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(config.url)
+    if parsed.scheme != "https":
+        return None
+
+    ssl_ctx = ssl.create_default_context()
+    if not config.ssl_config.verify:
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    elif config.ssl_config.ca_bundle:
+        ssl_ctx.load_verify_locations(config.ssl_config.ca_bundle)
+    return ssl_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -350,18 +413,36 @@ async def worker(
     request_counter: dict | None = None,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
-    """Async worker coroutine that sends HTTP requests in a loop."""
+    """Async worker coroutine that sends HTTP requests in a loop.
+
+    Executes HTTP requests against the configured URL until the stop condition
+    is met (duration elapsed, request count reached, or stop_event set).
+
+    Args:
+        config: Benchmark configuration including URL, method, headers, and timeouts.
+        stats: WorkerStats instance where request results are recorded. Shared state
+            is safe here because asyncio is single-threaded (no GIL contention).
+        connector: aiohttp TCP connector with connection pooling.
+        stop_event: Event that signals all workers to stop (set on SIGINT/SIGTERM
+            or when the benchmark duration expires).
+        request_counter: Optional shared dict with 'remaining' key for request-count
+            mode (-n flag). Workers atomically decrement this counter.
+        rate_limiter: Optional RateLimiter for throttling request rate.
+
+    Raises:
+        asyncio.CancelledError: Propagated if the task is cancelled externally.
+            The worker breaks cleanly and records final RPS timeline data.
+
+    Concurrency notes:
+        Each worker runs as an independent asyncio task sharing a connector's
+        connection pool. Stats mutation is safe because all tasks run on the
+        same event loop thread.
+    """
     start_time = time.monotonic()
     interval_start = start_time
     interval_count = 0
 
-    cookie_header = "; ".join(config.cookies) if config.cookies else None
-    req_headers = dict(config.headers)
-    if config.basic_auth:
-        encoded = base64.b64encode(config.basic_auth.encode()).decode()
-        req_headers["Authorization"] = f"Basic {encoded}"
-    if cookie_header:
-        req_headers["Cookie"] = cookie_header
+    req_headers = _build_request_headers(config)
 
     expected_length: int | None = None
 
@@ -404,7 +485,7 @@ async def worker(
                     request_url,
                     headers=req_headers,
                     data=config.body,
-                    ssl=False,
+                    ssl=config.ssl_config.verify,
                     timeout=client_timeout,
                     trace_request_ctx=trace_ctx,
                 ) as resp:
@@ -430,22 +511,21 @@ async def worker(
                         stats.error_types[f"HTTP {resp.status}"] += 1
 
                     if config.verbosity >= 4:
-                        print(f"  [v4] {config.method} {request_url} -> {resp.status} "
-                              f"({len(data)}B, {format_duration(latency)})")
+                        logger.debug(f"[v4] {config.method} {request_url} -> {resp.status} "
+                                     f"({len(data)}B, {format_duration(latency)})")
                     elif config.verbosity >= 3:
-                        print(f"  [v3] {resp.status}")
+                        logger.debug(f"[v3] {resp.status}")
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
                 latency = time.monotonic() - req_start
                 stats.total_requests += 1
                 stats.errors += 1
                 error_name = type(e).__name__
                 stats.error_types[error_name] += 1
                 stats.latencies.append(latency)
-                if config.verbosity >= 2:
-                    print(f"  [v2] WARNING: {error_name}: {e}")
+                logger.warning("Request error: %s: %s", error_name, e)
 
             interval_count += 1
             now = time.monotonic()
@@ -468,14 +548,32 @@ async def user_worker(
     active_users: dict,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
-    """Simulate a single virtual user with think time between requests."""
-    cookie_header = "; ".join(config.cookies) if config.cookies else None
-    req_headers = dict(config.headers)
-    if config.basic_auth:
-        encoded = base64.b64encode(config.basic_auth.encode()).decode()
-        req_headers["Authorization"] = f"Basic {encoded}"
-    if cookie_header:
-        req_headers["Cookie"] = cookie_header
+    """Simulate a single virtual user with configurable think time.
+
+    Models a real user session: send a request, wait (think time with jitter),
+    repeat. The user is counted as active from start until the coroutine exits.
+
+    Args:
+        user_id: Numeric identifier for this virtual user (used for logging).
+        config: Benchmark configuration including URL, method, think time settings.
+        stats: WorkerStats instance for recording request results.
+        connector: Shared aiohttp TCP connector with connection pooling.
+        stop_event: Cancellation signal; checked between requests and during think time.
+        start_time: Monotonic timestamp when the benchmark started, used to check
+            duration limits.
+        active_users: Shared dict with 'count' key tracking currently active users.
+            Incremented on entry, decremented in finally block.
+        rate_limiter: Optional rate limiter, applied only when think_time is 0
+            (otherwise think time naturally throttles request rate).
+
+    Raises:
+        asyncio.CancelledError: Handled internally; breaks the request loop cleanly.
+
+    Concurrency notes:
+        Think time uses asyncio.wait_for on the stop_event, allowing immediate
+        exit when the benchmark ends rather than sleeping through the full delay.
+    """
+    req_headers = _build_request_headers(config)
 
     expected_length: int | None = None
     active_users["count"] += 1
@@ -512,7 +610,7 @@ async def user_worker(
                         request_url,
                         headers=req_headers,
                         data=config.body,
-                        ssl=False,
+                        ssl=config.ssl_config.verify,
                         timeout=client_timeout,
                         trace_request_ctx=trace_ctx,
                     ) as resp:
@@ -538,13 +636,14 @@ async def user_worker(
 
                 except asyncio.CancelledError:
                     break
-                except Exception as e:
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
                     latency = time.monotonic() - req_start
                     stats.total_requests += 1
                     stats.errors += 1
                     error_name = type(e).__name__
                     stats.error_types[error_name] += 1
                     stats.latencies.append(latency)
+                    logger.warning("User %d request error: %s: %s", user_id, error_name, e)
 
                 # Record for timeline
                 now = time.monotonic()
@@ -575,18 +674,35 @@ async def scenario_worker(
     active_users: dict,
     request_counter: dict | None = None,
 ) -> None:
-    """Execute a scripted scenario: iterate through steps in order, then repeat."""
+    """Execute a scripted multi-step scenario in a loop.
+
+    Iterates through scenario steps sequentially, executing each HTTP request
+    with step-specific headers, body, and assertions. After completing all steps,
+    loops back to the first step. Continues until stop condition is met.
+
+    Args:
+        user_id: Numeric identifier for this scenario user.
+        config: Benchmark configuration; must have config.scenario set.
+        stats: WorkerStats for recording per-step latencies and overall results.
+        connector: Shared aiohttp TCP connector.
+        stop_event: Cancellation signal checked between steps.
+        start_time: Monotonic timestamp of benchmark start for duration checks.
+        active_users: Shared dict tracking active user count.
+        request_counter: Optional shared counter for request-count mode.
+
+    Raises:
+        asyncio.CancelledError: Handled internally; exits the scenario loop cleanly.
+
+    Concurrency notes:
+        Per-step latencies are tracked in stats.step_latencies[step_name] for
+        detailed per-step reporting. Think time between steps respects both
+        step-level and scenario-level think_time settings.
+    """
     scenario = config.scenario
     if not scenario:
         return
 
-    cookie_header = "; ".join(config.cookies) if config.cookies else None
-    base_headers = dict(config.headers)
-    if config.basic_auth:
-        encoded = base64.b64encode(config.basic_auth.encode()).decode()
-        base_headers["Authorization"] = f"Basic {encoded}"
-    if cookie_header:
-        base_headers["Cookie"] = cookie_header
+    base_headers = _build_request_headers(config)
 
     parsed = urlparse(config.url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -637,7 +753,7 @@ async def scenario_worker(
                             request_url,
                             headers=req_headers,
                             data=body,
-                            ssl=False,
+                            ssl=config.ssl_config.verify,
                             timeout=client_timeout,
                         ) as resp:
                             data = await resp.read()
@@ -669,7 +785,7 @@ async def scenario_worker(
 
                     except asyncio.CancelledError:
                         return
-                    except Exception as e:
+                    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
                         latency = time.monotonic() - req_start
                         stats.total_requests += 1
                         stats.errors += 1
@@ -677,6 +793,8 @@ async def scenario_worker(
                         stats.error_types[error_name] += 1
                         stats.latencies.append(latency)
                         stats.step_latencies[step_name].append(latency)
+                        logger.warning("Scenario user %d step '%s' error: %s: %s",
+                                       user_id, step_name, error_name, e)
 
                     now = time.monotonic()
                     stats.rps_timeline.append((now, 1))
@@ -740,31 +858,51 @@ async def show_progress(
 # ---------------------------------------------------------------------------
 
 async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
-    """Run a fixed-concurrency benchmark and return merged stats with exit code."""
-    parsed = urlparse(config.url)
-    use_ssl = parsed.scheme == "https"
+    """Run a fixed-concurrency benchmark and return merged stats with exit code.
 
+    Creates N worker tasks distributed across thread groups, each sharing a
+    connection pool via aiohttp.TCPConnector. Supports duration-based and
+    request-count modes, with optional rate limiting and live dashboard.
+
+    Args:
+        config: Full benchmark configuration including URL, concurrency,
+            duration/request count, and output options.
+
+    Returns:
+        Tuple of (merged_stats, exit_code) where exit_code is 0 for success
+        or 2 if any SLO threshold was breached.
+
+    Raises:
+        No exceptions are raised to the caller. Network errors, timeouts,
+        and HTTP errors are captured in WorkerStats.
+
+    Concurrency notes:
+        Workers are distributed across thread groups. Each group shares a
+        TCPConnector with a connection limit equal to the number of workers
+        in that group. Signal handlers (SIGINT/SIGTERM) set a stop_event
+        that all workers check between requests.
+    """
     mode_str = (
         f"{config.num_requests} requests"
         if config.num_requests
         else f"{config.duration}s duration"
     )
-    print(f"Running benchmark: {config.url}")
-    print(f"  {config.threads} worker groups, {config.connections} connections, {mode_str}")
-    print(f"  Method: {config.method}, Timeout: {config.timeout_sec}s, "
-          f"Keep-Alive: {'yes' if config.keepalive else 'no'}")
+    logger.info("Running benchmark: %s", config.url)
+    logger.info("  %d worker groups, %d connections, %s", config.threads, config.connections, mode_str)
+    logger.info("  Method: %s, Timeout: %ss, Keep-Alive: %s",
+                config.method, config.timeout_sec, "yes" if config.keepalive else "no")
     if config.rate is not None:
         rate_str = f"{config.rate:,.0f} req/s"
         if config.rate_ramp is not None:
             rate_str += f" -> {config.rate_ramp:,.0f} req/s (ramp)"
-        print(f"  Rate Limit: {rate_str}")
+        logger.info("  Rate Limit: %s", rate_str)
     if config.random_param:
-        print(f"  Cache-Buster: random _cb= parameter per request")
+        logger.info("  Cache-Buster: random _cb= parameter per request")
     if config.basic_auth:
-        print(f"  Auth: Basic (user={config.basic_auth.split(':')[0]})")
+        logger.info("  Auth: Basic (user=%s)", config.basic_auth.split(":")[0])
     if config.cookies:
-        print(f"  Cookies: {len(config.cookies)}")
-    print()
+        logger.info("  Cookies: %d", len(config.cookies))
+    logger.info("")
 
     stop_event = asyncio.Event()
 
@@ -796,16 +934,13 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     all_stats: list[WorkerStats] = []
     tasks = []
     start_time = time.monotonic()
+    ssl_ctx = _create_ssl_context(config)
+    connectors: list[aiohttp.TCPConnector] = []
 
     for i in range(config.threads):
         n_conns = conns_per_group + (1 if i < remainder else 0)
         if n_conns == 0:
             continue
-
-        ssl_ctx = ssl.create_default_context() if use_ssl else None
-        if ssl_ctx:
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
 
         connector = aiohttp.TCPConnector(
             limit=n_conns,
@@ -813,6 +948,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
             force_close=not config.keepalive,
             enable_cleanup_closed=True,
         )
+        connectors.append(connector)
 
         for j in range(n_conns):
             ws = WorkerStats()
@@ -837,9 +973,8 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         progress_task = asyncio.create_task(dashboard.run(stop_event))
     else:
         if config.live_dashboard and not _reporting.RICH_AVAILABLE:
-            print("Warning: --live requires 'rich' package. "
-                  "Install with: pip install pywrkr[tui]")
-            print("Falling back to standard progress display.")
+            logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
+            logger.warning("Falling back to standard progress display.")
         progress_task = asyncio.create_task(
             show_progress(start_time, config.duration, config.num_requests, all_stats, stop_event)
         )
@@ -848,25 +983,14 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     stop_event.set()
     await progress_task
 
+    # Clean up connectors
+    for conn in connectors:
+        await conn.close()
+
     end_time = time.monotonic()
     actual_duration = end_time - start_time
 
-    # Merge stats
-    merged = WorkerStats()
-    for ws in all_stats:
-        merged.total_requests += ws.total_requests
-        merged.total_bytes += ws.total_bytes
-        merged.errors += ws.errors
-        merged.content_length_errors += ws.content_length_errors
-        merged.latencies.extend(ws.latencies)
-        merged.rps_timeline.extend(ws.rps_timeline)
-        for k, v in ws.error_types.items():
-            merged.error_types[k] += v
-        for k, v in ws.status_codes.items():
-            merged.status_codes[k] += v
-        for k, v in ws.step_latencies.items():
-            merged.step_latencies[k].extend(v)
-        merged.breakdowns.extend(ws.breakdowns)
+    merged = _merge_all_stats(all_stats)
 
     print_results(merged, actual_duration, config.connections, start_time, config, rate_limiter)
 
@@ -886,29 +1010,45 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
 # ---------------------------------------------------------------------------
 
 async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
-    """Run a virtual user load test with ramp-up and think time."""
-    parsed = urlparse(config.url)
-    use_ssl = parsed.scheme == "https"
+    """Run a virtual-user load test with ramp-up and think time.
+
+    Creates one task per virtual user, optionally staggering their start
+    times over a ramp-up period. Each user sends requests with configurable
+    think time between them.
+
+    Args:
+        config: Benchmark configuration. Must have config.users set.
+            config.duration defaults to 60s if not specified.
+
+    Returns:
+        Tuple of (merged_stats, exit_code) where exit_code is 0 for success
+        or 2 if any SLO threshold was breached.
+
+    Concurrency notes:
+        All users share a single TCPConnector with limit=num_users. Ramp-up
+        is implemented by sleeping between task creation calls, so early
+        users begin sending requests while later users are still being launched.
+    """
     num_users = config.users
     duration = config.duration or 60.0
     quiet = getattr(config, '_quiet', False)
 
     if not quiet:
-        print(f"Running user simulation: {config.url}")
-        print(f"  {num_users} virtual users, {format_duration(duration)} duration")
-        print(f"  Ramp-up: {format_duration(config.ramp_up)}, "
-              f"Think time: {format_duration(config.think_time)} "
-              f"(jitter: {config.think_time_jitter:.0%})")
-        print(f"  Method: {config.method}, Timeout: {config.timeout_sec}s, "
-              f"Keep-Alive: {'yes' if config.keepalive else 'no'}")
+        logger.info("Running user simulation: %s", config.url)
+        logger.info("  %d virtual users, %s duration", num_users, format_duration(duration))
+        logger.info("  Ramp-up: %s, Think time: %s (jitter: %s)",
+                     format_duration(config.ramp_up), format_duration(config.think_time),
+                     f"{config.think_time_jitter:.0%}")
+        logger.info("  Method: %s, Timeout: %ss, Keep-Alive: %s",
+                     config.method, config.timeout_sec, "yes" if config.keepalive else "no")
         if config.rate is not None:
             rate_str = f"{config.rate:,.0f} req/s"
             if config.rate_ramp is not None:
                 rate_str += f" -> {config.rate_ramp:,.0f} req/s (ramp)"
-            print(f"  Rate Limit: {rate_str}")
+            logger.info("  Rate Limit: %s", rate_str)
         if config.random_param:
-            print(f"  Cache-Buster: random _cb= parameter per request")
-        print()
+            logger.info("  Cache-Buster: random _cb= parameter per request")
+        logger.info("")
 
     stop_event = asyncio.Event()
 
@@ -928,10 +1068,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
             duration=duration,
         )
 
-    ssl_ctx = ssl.create_default_context() if use_ssl else None
-    if ssl_ctx:
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+    ssl_ctx = _create_ssl_context(config)
 
     connector = aiohttp.TCPConnector(
         limit=num_users,
@@ -958,9 +1095,8 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         progress_task = asyncio.create_task(dashboard.run(stop_event))
     else:
         if config.live_dashboard and not _reporting.RICH_AVAILABLE:
-            print("Warning: --live requires 'rich' package. "
-                  "Install with: pip install pywrkr[tui]")
-            print("Falling back to standard progress display.")
+            logger.warning("--live requires 'rich' package. Install with: pip install pywrkr[tui]")
+            logger.warning("Falling back to standard progress display.")
         progress_task = asyncio.create_task(
             show_progress(start_time, duration, None, all_stats, stop_event, active_users)
         )
@@ -988,26 +1124,12 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     await asyncio.gather(*tasks, return_exceptions=True)
     stop_event.set()
     await progress_task
+    await connector.close()
 
     end_time = time.monotonic()
     actual_duration = end_time - start_time
 
-    # Merge stats
-    merged = WorkerStats()
-    for ws in all_stats:
-        merged.total_requests += ws.total_requests
-        merged.total_bytes += ws.total_bytes
-        merged.errors += ws.errors
-        merged.content_length_errors += ws.content_length_errors
-        merged.latencies.extend(ws.latencies)
-        merged.rps_timeline.extend(ws.rps_timeline)
-        for k, v in ws.error_types.items():
-            merged.error_types[k] += v
-        for k, v in ws.status_codes.items():
-            merged.status_codes[k] += v
-        for k, v in ws.step_latencies.items():
-            merged.step_latencies[k].extend(v)
-        merged.breakdowns.extend(ws.breakdowns)
+    merged = _merge_all_stats(all_stats)
 
     if not quiet:
         print_results(merged, actual_duration, num_users, start_time, config, rate_limiter)
@@ -1074,13 +1196,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     step. When a step fails thresholds, binary-searches between the last good
     and first bad user count to refine the answer.
     """
-    print(f"Autofind: ramping load on {config.url}")
-    print(f"  Thresholds: max error rate={config.max_error_rate}%, "
-          f"max p95={config.max_p95}s")
-    print(f"  Step duration: {config.step_duration}s, "
-          f"start users: {config.start_users}, max users: {config.max_users}")
-    print(f"  Step multiplier: {config.step_multiplier}x")
-    print()
+    logger.info("Autofind: ramping load on %s", config.url)
+    logger.info("  Thresholds: max error rate=%s%%, max p95=%ss",
+                config.max_error_rate, config.max_p95)
+    logger.info("  Step duration: %ss, start users: %s, max users: %s",
+                config.step_duration, config.start_users, config.max_users)
+    logger.info("  Step multiplier: %sx", config.step_multiplier)
+    logger.info("")
 
     steps: list[StepResult] = []
     last_good: int | None = None
@@ -1105,12 +1227,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
 
     # Phase 1: Exponential ramp-up
     while current_users <= config.max_users:
-        print(f"  Step: testing {current_users} users ...", end=" ", flush=True)
+        logger.info("  Step: testing %d users ...", current_users)
         result = await _run_step(current_users)
         steps.append(result)
         status = "OK" if result.passed else "FAIL"
-        print(f"{result.rps:.1f} rps, p95={_format_latency_short(result.p95)}, "
-              f"err={result.error_rate:.1f}% -> {status}")
+        logger.info("  %s rps, p95=%s, err=%s%% -> %s",
+                     f"{result.rps:.1f}", _format_latency_short(result.p95),
+                     f"{result.error_rate:.1f}", status)
 
         if result.passed:
             last_good = current_users
@@ -1135,12 +1258,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
             mid = (lo + hi) // 2
             if mid == lo or mid == hi:
                 break
-            print(f"  Refine: testing {mid} users ...", end=" ", flush=True)
+            logger.info("  Refine: testing %d users ...", mid)
             result = await _run_step(mid)
             steps.append(result)
             status = "OK" if result.passed else "FAIL"
-            print(f"{result.rps:.1f} rps, p95={_format_latency_short(result.p95)}, "
-                  f"err={result.error_rate:.1f}% -> {status}")
+            logger.info("  %s rps, p95=%s, err=%s%% -> %s",
+                         f"{result.rps:.1f}", _format_latency_short(result.p95),
+                         f"{result.error_rate:.1f}", status)
 
             if result.passed:
                 lo = mid
@@ -1180,4 +1304,4 @@ def _write_autofind_json(config: AutofindConfig, steps: list[StepResult],
     }
     with open(config.json_output, "w") as f:
         json.dump(data, f, indent=2)
-    print(f"\n  JSON results written to {config.json_output}")
+    logger.info("  JSON results written to %s", config.json_output)
