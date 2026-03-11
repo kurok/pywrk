@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-pywrk - A Python HTTP benchmarking tool inspired by wrk and Apache ab,
+pywrkr - A Python HTTP benchmarking tool inspired by wrk and Apache ab,
 with extended statistics.
 
 Usage:
-    python pywrk.py -c 100 -d 10 -t 4 http://localhost:8080/
-    python pywrk.py -n 1000 -c 50 http://localhost:8080/
+    python pywrkr.py -c 100 -d 10 -t 4 http://localhost:8080/
+    python pywrkr.py -n 1000 -c 50 http://localhost:8080/
 """
 
 import argparse
@@ -369,7 +369,7 @@ class LiveDashboard:
             bar = '\u2588' * bar_len + '\u2591' * (max_bar - bar_len)
             table.add_row("Throughput:", f"{bar} {rps:.0f} req/s")
 
-        return Panel(table, title="pywrk Live Dashboard", border_style="green")
+        return Panel(table, title="pywrkr Live Dashboard", border_style="green")
 
     async def run(self, stop_event: asyncio.Event):
         """Update the dashboard every 0.5s until stop_event is set."""
@@ -935,8 +935,8 @@ def generate_html_report(stats: WorkerStats, duration: float, connections: int) 
         else:
             rows.append(f"<tr><td>{key}</td><td>{val}</td></tr>")
     return (
-        "<html><head><title>pywrk benchmark results</title></head><body>\n"
-        "<h1>pywrk Benchmark Results</h1>\n"
+        "<html><head><title>pywrkr benchmark results</title></head><body>\n"
+        "<h1>pywrkr Benchmark Results</h1>\n"
         "<table border='1' cellpadding='4'>\n"
         "<tr><th>Metric</th><th>Value</th></tr>\n"
         + "\n".join(rows)
@@ -948,25 +948,25 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP."""
     if not OTEL_AVAILABLE:
         print("Warning: opentelemetry packages not installed. "
-              "Install with: pip install pywrk[otel]")
+              "Install with: pip install pywrkr[otel]")
         return
 
     try:
-        resource_attrs = {"service.name": "pywrk"}
+        resource_attrs = {"service.name": "pywrkr"}
         resource_attrs.update(tags)
         resource = Resource.create(resource_attrs)
         exporter = OTLPMetricExporter(endpoint=endpoint)
         reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
-        meter = provider.get_meter("pywrk")
+        meter = provider.get_meter("pywrkr")
 
         attributes = dict(tags)
 
         # Counters
-        req_counter = meter.create_counter("pywrk.requests.total", description="Total requests")
+        req_counter = meter.create_counter("pywrkr.requests.total", description="Total requests")
         req_counter.add(results.get("total_requests", 0), attributes=attributes)
 
-        err_counter = meter.create_counter("pywrk.errors.total", description="Total errors")
+        err_counter = meter.create_counter("pywrkr.errors.total", description="Total errors")
         err_counter.add(results.get("total_errors", 0), attributes=attributes)
 
         # Gauges via UpDownCounter (set once)
@@ -974,17 +974,17 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
             g = meter.create_up_down_counter(name, description=desc)
             g.add(value, attributes=attributes)
 
-        _gauge("pywrk.requests_per_sec", results.get("requests_per_sec", 0))
-        _gauge("pywrk.transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0))
-        _gauge("pywrk.duration_sec", results.get("duration_sec", 0))
+        _gauge("pywrkr.requests_per_sec", results.get("requests_per_sec", 0))
+        _gauge("pywrkr.transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0))
+        _gauge("pywrkr.duration_sec", results.get("duration_sec", 0))
 
         percentiles = results.get("percentiles", {})
         latency = results.get("latency", {})
-        _gauge("pywrk.latency.p50", percentiles.get("p50", 0) * 1000)
-        _gauge("pywrk.latency.p95", percentiles.get("p95", 0) * 1000)
-        _gauge("pywrk.latency.p99", percentiles.get("p99", 0) * 1000)
-        _gauge("pywrk.latency.mean", latency.get("mean", 0) * 1000)
-        _gauge("pywrk.latency.max", latency.get("max", 0) * 1000)
+        _gauge("pywrkr.latency.p50", percentiles.get("p50", 0) * 1000)
+        _gauge("pywrkr.latency.p95", percentiles.get("p95", 0) * 1000)
+        _gauge("pywrkr.latency.p99", percentiles.get("p99", 0) * 1000)
+        _gauge("pywrkr.latency.mean", latency.get("mean", 0) * 1000)
+        _gauge("pywrkr.latency.max", latency.get("max", 0) * 1000)
 
         # Force flush and shutdown
         provider.force_flush()
@@ -1009,32 +1009,32 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
             lines.append(f"# TYPE {name} {mtype}")
             lines.append(f"{name}{labels_str} {value}")
 
-        _add("pywrk_requests_total", results.get("total_requests", 0),
+        _add("pywrkr_requests_total", results.get("total_requests", 0),
              "counter", "Total requests")
-        _add("pywrk_errors_total", results.get("total_errors", 0),
+        _add("pywrkr_errors_total", results.get("total_errors", 0),
              "counter", "Total errors")
-        _add("pywrk_requests_per_sec", results.get("requests_per_sec", 0),
+        _add("pywrkr_requests_per_sec", results.get("requests_per_sec", 0),
              "gauge", "Requests per second")
-        _add("pywrk_transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0),
+        _add("pywrkr_transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0),
              "gauge", "Transfer bytes per second")
-        _add("pywrk_duration_sec", results.get("duration_sec", 0),
+        _add("pywrkr_duration_sec", results.get("duration_sec", 0),
              "gauge", "Benchmark duration in seconds")
 
         percentiles = results.get("percentiles", {})
         latency = results.get("latency", {})
-        _add("pywrk_latency_p50_ms", percentiles.get("p50", 0) * 1000,
+        _add("pywrkr_latency_p50_ms", percentiles.get("p50", 0) * 1000,
              "gauge", "p50 latency in ms")
-        _add("pywrk_latency_p95_ms", percentiles.get("p95", 0) * 1000,
+        _add("pywrkr_latency_p95_ms", percentiles.get("p95", 0) * 1000,
              "gauge", "p95 latency in ms")
-        _add("pywrk_latency_p99_ms", percentiles.get("p99", 0) * 1000,
+        _add("pywrkr_latency_p99_ms", percentiles.get("p99", 0) * 1000,
              "gauge", "p99 latency in ms")
-        _add("pywrk_latency_mean_ms", latency.get("mean", 0) * 1000,
+        _add("pywrkr_latency_mean_ms", latency.get("mean", 0) * 1000,
              "gauge", "Mean latency in ms")
-        _add("pywrk_latency_max_ms", latency.get("max", 0) * 1000,
+        _add("pywrkr_latency_max_ms", latency.get("max", 0) * 1000,
              "gauge", "Max latency in ms")
 
         body = "\n".join(lines) + "\n"
-        url = endpoint.rstrip("/") + "/metrics/job/pywrk"
+        url = endpoint.rstrip("/") + "/metrics/job/pywrkr"
         req = urllib.request.Request(
             url,
             data=body.encode("utf-8"),
@@ -1709,7 +1709,7 @@ async def run_benchmark(config: BenchmarkConfig):
     else:
         if config.live_dashboard and not RICH_AVAILABLE:
             print("Warning: --live requires 'rich' package. "
-                  "Install with: pip install pywrk[tui]")
+                  "Install with: pip install pywrkr[tui]")
             print("Falling back to standard progress display.")
         progress_task = asyncio.create_task(
             show_progress(start_time, config.duration, config.num_requests, all_stats, stop_event)
@@ -1828,7 +1828,7 @@ async def run_user_simulation(config: BenchmarkConfig):
     else:
         if config.live_dashboard and not RICH_AVAILABLE:
             print("Warning: --live requires 'rich' package. "
-                  "Install with: pip install pywrk[tui]")
+                  "Install with: pip install pywrkr[tui]")
             print("Falling back to standard progress display.")
         progress_task = asyncio.create_task(
             show_progress(start_time, duration, None, all_stats, stop_event, active_users)
@@ -2538,7 +2538,7 @@ def parse_header(s: str) -> tuple[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="pywrk - HTTP benchmarking tool with extended statistics (wrk + ab features)",
+        description="pywrkr - HTTP benchmarking tool with extended statistics (wrk + ab features)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2623,7 +2623,7 @@ Examples:
                         help="Path to a JSON/YAML scenario file for scripted multi-step requests")
     parser.add_argument("--live", action="store_true", default=False,
                         help="Show a live TUI dashboard during the benchmark "
-                             "(requires rich: pip install pywrk[tui])")
+                             "(requires rich: pip install pywrkr[tui])")
     parser.add_argument("--latency-breakdown", action="store_true", default=False,
                         help="Show detailed latency breakdown per phase "
                              "(DNS, TCP connect, TLS, TTFB, transfer)")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for pywrk benchmarking tool."""
+"""Unit tests for pywrkr benchmarking tool."""
 
 import asyncio
 import base64
@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 
-import pywrk
-import pywrk.main as pywrk_main
+import pywrkr
+import pywrkr.main as pywrkr_main
 
 
 # ---------------------------------------------------------------------------
@@ -28,41 +28,41 @@ import pywrk.main as pywrk_main
 
 class TestFormatBytes(unittest.TestCase):
     def test_bytes(self):
-        self.assertEqual(pywrk.format_bytes(0), "0.00B")
-        self.assertEqual(pywrk.format_bytes(512), "512.00B")
+        self.assertEqual(pywrkr.format_bytes(0), "0.00B")
+        self.assertEqual(pywrkr.format_bytes(512), "512.00B")
 
     def test_kilobytes(self):
-        self.assertEqual(pywrk.format_bytes(1024), "1.00KB")
-        self.assertEqual(pywrk.format_bytes(1536), "1.50KB")
+        self.assertEqual(pywrkr.format_bytes(1024), "1.00KB")
+        self.assertEqual(pywrkr.format_bytes(1536), "1.50KB")
 
     def test_megabytes(self):
-        self.assertEqual(pywrk.format_bytes(1024 * 1024), "1.00MB")
+        self.assertEqual(pywrkr.format_bytes(1024 * 1024), "1.00MB")
 
     def test_gigabytes(self):
-        self.assertEqual(pywrk.format_bytes(1024 ** 3), "1.00GB")
+        self.assertEqual(pywrkr.format_bytes(1024 ** 3), "1.00GB")
 
     def test_terabytes(self):
-        self.assertEqual(pywrk.format_bytes(1024 ** 4), "1.00TB")
+        self.assertEqual(pywrkr.format_bytes(1024 ** 4), "1.00TB")
 
     def test_negative(self):
-        result = pywrk.format_bytes(-512)
+        result = pywrkr.format_bytes(-512)
         self.assertIn("B", result)
 
 
 class TestFormatDuration(unittest.TestCase):
     def test_microseconds(self):
-        self.assertIn("us", pywrk.format_duration(0.0001))
+        self.assertIn("us", pywrkr.format_duration(0.0001))
 
     def test_milliseconds(self):
-        self.assertIn("ms", pywrk.format_duration(0.5))
-        self.assertEqual(pywrk.format_duration(0.5), "500.00ms")
+        self.assertIn("ms", pywrkr.format_duration(0.5))
+        self.assertEqual(pywrkr.format_duration(0.5), "500.00ms")
 
     def test_seconds(self):
-        self.assertIn("s", pywrk.format_duration(2.5))
-        self.assertEqual(pywrk.format_duration(2.5), "2.50s")
+        self.assertIn("s", pywrkr.format_duration(2.5))
+        self.assertEqual(pywrkr.format_duration(2.5), "2.50s")
 
     def test_zero(self):
-        self.assertIn("us", pywrk.format_duration(0))
+        self.assertIn("us", pywrkr.format_duration(0))
 
 
 # ---------------------------------------------------------------------------
@@ -71,22 +71,22 @@ class TestFormatDuration(unittest.TestCase):
 
 class TestComputePercentiles(unittest.TestCase):
     def test_empty(self):
-        self.assertEqual(pywrk.compute_percentiles([]), [])
+        self.assertEqual(pywrkr.compute_percentiles([]), [])
 
     def test_single_value(self):
-        result = pywrk.compute_percentiles([0.5])
+        result = pywrkr.compute_percentiles([0.5])
         self.assertTrue(all(v == 0.5 for _, v in result))
 
     def test_known_distribution(self):
         latencies = list(range(1, 101))  # 1..100
-        result = dict(pywrk.compute_percentiles(latencies))
+        result = dict(pywrkr.compute_percentiles(latencies))
         self.assertEqual(result[50], 50)
         self.assertEqual(result[99], 99)
         self.assertEqual(result[100 - 0.01], 100)  # p99.99 -> last
 
     def test_percentiles_sorted(self):
         latencies = [0.1, 0.5, 0.2, 0.8, 0.3, 1.0, 0.05]
-        result = pywrk.compute_percentiles(latencies)
+        result = pywrkr.compute_percentiles(latencies)
         values = [v for _, v in result]
         self.assertEqual(values, sorted(values))
 
@@ -98,16 +98,16 @@ class TestComputePercentiles(unittest.TestCase):
 class TestLatencyHistogram(unittest.TestCase):
     def test_empty(self):
         # Should not raise
-        pywrk.print_latency_histogram([])
+        pywrkr.print_latency_histogram([])
 
     def test_single_value(self):
         buf = StringIO()
-        pywrk.print_latency_histogram([0.5], file=buf)
+        pywrkr.print_latency_histogram([0.5], file=buf)
         self.assertIn("All requests", buf.getvalue())
 
     def test_multiple_values(self):
         buf = StringIO()
-        pywrk.print_latency_histogram([0.1, 0.2, 0.3, 0.4, 0.5], buckets=5, file=buf)
+        pywrkr.print_latency_histogram([0.1, 0.2, 0.3, 0.4, 0.5], buckets=5, file=buf)
         output = buf.getvalue()
         self.assertIn("histogram", output.lower())
         self.assertIn("#", output)
@@ -120,13 +120,13 @@ class TestLatencyHistogram(unittest.TestCase):
 class TestRpsTimeline(unittest.TestCase):
     def test_empty(self):
         buf = StringIO()
-        pywrk.print_rps_timeline([], 0, 10, file=buf)
+        pywrkr.print_rps_timeline([], 0, 10, file=buf)
         self.assertEqual(buf.getvalue(), "")
 
     def test_basic_timeline(self):
         buf = StringIO()
         timeline = [(0.0, 10), (1.0, 15), (2.0, 12)]
-        pywrk.print_rps_timeline(timeline, 0.0, 5, file=buf)
+        pywrkr.print_rps_timeline(timeline, 0.0, 5, file=buf)
         output = buf.getvalue()
         self.assertIn("req/s", output)
 
@@ -137,7 +137,7 @@ class TestRpsTimeline(unittest.TestCase):
 
 class TestBuildResultsDict(unittest.TestCase):
     def _make_stats(self, n=100):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = n
         stats.total_bytes = n * 1024
         stats.errors = 2
@@ -148,7 +148,7 @@ class TestBuildResultsDict(unittest.TestCase):
 
     def test_basic_fields(self):
         stats = self._make_stats()
-        result = pywrk.build_results_dict(stats, 10.0, 50)
+        result = pywrkr.build_results_dict(stats, 10.0, 50)
         self.assertEqual(result["total_requests"], 100)
         self.assertEqual(result["connections"], 50)
         self.assertAlmostEqual(result["requests_per_sec"], 10.0)
@@ -157,12 +157,12 @@ class TestBuildResultsDict(unittest.TestCase):
 
     def test_zero_duration(self):
         stats = self._make_stats()
-        result = pywrk.build_results_dict(stats, 0, 10)
+        result = pywrkr.build_results_dict(stats, 0, 10)
         self.assertEqual(result["requests_per_sec"], 0)
 
     def test_percentile_keys(self):
         stats = self._make_stats()
-        result = pywrk.build_results_dict(stats, 10.0, 10)
+        result = pywrkr.build_results_dict(stats, 10.0, 10)
         expected_keys = {"p50", "p75", "p90", "p95", "p99", "p99.9", "p99.99"}
         self.assertEqual(set(result["percentiles"].keys()), expected_keys)
 
@@ -173,14 +173,14 @@ class TestBuildResultsDict(unittest.TestCase):
 
 class TestCsvOutput(unittest.TestCase):
     def test_write_csv(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.latencies = [0.01 * i for i in range(1, 101)]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             path = f.name
 
         try:
-            pywrk.write_csv_output(path, stats)
+            pywrkr.write_csv_output(path, stats)
             with open(path) as f:
                 reader = csv.reader(f)
                 rows = list(reader)
@@ -193,11 +193,11 @@ class TestCsvOutput(unittest.TestCase):
             os.unlink(path)
 
     def test_write_csv_empty(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             path = f.name
         try:
-            pywrk.write_csv_output(path, stats)
+            pywrkr.write_csv_output(path, stats)
             # Should not create content for empty latencies
         finally:
             os.unlink(path)
@@ -213,7 +213,7 @@ class TestJsonOutput(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
         try:
-            pywrk.write_json_output(path, data)
+            pywrkr.write_json_output(path, data)
             with open(path) as f:
                 loaded = json.load(f)
             self.assertEqual(loaded, data)
@@ -227,12 +227,12 @@ class TestJsonOutput(unittest.TestCase):
 
 class TestHtmlReport(unittest.TestCase):
     def test_contains_html_tags(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 10
         stats.total_bytes = 5000
         stats.latencies = [0.1, 0.2, 0.3]
         stats.status_codes = defaultdict(int, {200: 10})
-        html = pywrk.generate_html_report(stats, 5.0, 10)
+        html = pywrkr.generate_html_report(stats, 5.0, 10)
         self.assertIn("<html>", html)
         self.assertIn("<table", html)
         self.assertIn("total_requests", html)
@@ -245,7 +245,7 @@ class TestHtmlReport(unittest.TestCase):
 
 class TestBenchmarkConfig(unittest.TestCase):
     def test_defaults(self):
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/")
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/")
         self.assertEqual(cfg.connections, 10)
         self.assertEqual(cfg.duration, 10.0)
         self.assertIsNone(cfg.num_requests)
@@ -255,7 +255,7 @@ class TestBenchmarkConfig(unittest.TestCase):
         self.assertEqual(cfg.cookies, [])
 
     def test_request_count_mode(self):
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/", num_requests=500, duration=None)
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/", num_requests=500, duration=None)
         self.assertEqual(cfg.num_requests, 500)
         self.assertIsNone(cfg.duration)
 
@@ -266,19 +266,19 @@ class TestBenchmarkConfig(unittest.TestCase):
 
 class TestParseHeader(unittest.TestCase):
     def test_valid(self):
-        name, value = pywrk.parse_header("Content-Type: application/json")
+        name, value = pywrkr.parse_header("Content-Type: application/json")
         self.assertEqual(name, "Content-Type")
         self.assertEqual(value, "application/json")
 
     def test_value_with_colon(self):
-        name, value = pywrk.parse_header("X-Custom: val:with:colons")
+        name, value = pywrkr.parse_header("X-Custom: val:with:colons")
         self.assertEqual(name, "X-Custom")
         self.assertEqual(value, "val:with:colons")
 
     def test_invalid(self):
         import argparse
         with self.assertRaises(argparse.ArgumentTypeError):
-            pywrk.parse_header("no-colon-here")
+            pywrkr.parse_header("no-colon-here")
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ class TestStatsMerging(unittest.TestCase):
     def test_merge_multiple_stats(self):
         stats_list = []
         for i in range(3):
-            ws = pywrk.WorkerStats()
+            ws = pywrkr.WorkerStats()
             ws.total_requests = 10
             ws.total_bytes = 1000
             ws.errors = 1
@@ -300,7 +300,7 @@ class TestStatsMerging(unittest.TestCase):
             ws.content_length_errors = i
             stats_list.append(ws)
 
-        merged = pywrk.WorkerStats()
+        merged = pywrkr.WorkerStats()
         for ws in stats_list:
             merged.total_requests += ws.total_requests
             merged.total_bytes += ws.total_bytes
@@ -327,7 +327,7 @@ class TestStatsMerging(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBenchmarkIntegration(AioHTTPTestCase):
-    """Spin up a local aiohttp server and run pywrk against it."""
+    """Spin up a local aiohttp server and run pywrkr against it."""
 
     async def get_application(self):
         app = web.Application()
@@ -388,7 +388,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
 
     @unittest_run_loop
     async def test_basic_get_duration_mode(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=1.0,
@@ -396,7 +396,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertIn(200, stats.status_codes)
         # Allow small number of timeout errors at end of duration window
@@ -404,7 +404,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
 
     @unittest_run_loop
     async def test_request_count_mode(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=None,
@@ -413,14 +413,14 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreaterEqual(stats.total_requests, 20)
         # At least 90% successful
         self.assertGreaterEqual(stats.status_codes.get(200, 0), 18)
 
     @unittest_run_loop
     async def test_post_with_body(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/post"),
             connections=1,
             duration=None,
@@ -432,13 +432,13 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.total_requests, 5)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_basic_auth(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/auth"),
             connections=1,
             duration=None,
@@ -448,13 +448,13 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.status_codes.get(200, 0), 3)
         self.assertEqual(stats.errors, 0)
 
     @unittest_run_loop
     async def test_basic_auth_fail(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/auth"),
             connections=1,
             duration=None,
@@ -464,12 +464,12 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.status_codes.get(401, 0), 3)
 
     @unittest_run_loop
     async def test_cookie_support(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/cookie"),
             connections=1,
             duration=None,
@@ -479,13 +479,13 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.status_codes.get(200, 0), 3)
         self.assertEqual(stats.errors, 0)
 
     @unittest_run_loop
     async def test_cookie_missing(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/cookie"),
             connections=1,
             duration=None,
@@ -494,12 +494,12 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.status_codes.get(400, 0), 3)
 
     @unittest_run_loop
     async def test_error_endpoint(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/error"),
             connections=1,
             duration=None,
@@ -508,13 +508,13 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.status_codes.get(500, 0), 5)
         self.assertEqual(stats.errors, 5)
 
     @unittest_run_loop
     async def test_no_keepalive(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=None,
@@ -524,7 +524,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreaterEqual(stats.total_requests, 10)
         # Allow small number of end-of-run race condition errors
         self.assertLessEqual(stats.errors, 2)
@@ -534,7 +534,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             csv_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=1,
                 duration=None,
@@ -544,7 +544,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
                 timeout_sec=5,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             with open(csv_path) as f:
                 reader = csv.reader(f)
                 rows = list(reader)
@@ -558,7 +558,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=1,
                 duration=None,
@@ -568,7 +568,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
                 timeout_sec=5,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("total_requests", data)
@@ -580,7 +580,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
 
     @unittest_run_loop
     async def test_html_output(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             duration=None,
@@ -591,7 +591,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("<html>", output)
         self.assertIn("<table", output)
@@ -599,7 +599,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_verbosity_levels(self):
         for level in [2, 3, 4]:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=1,
                 duration=None,
@@ -610,7 +610,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             )
             buf = StringIO()
             with patch("sys.stdout", buf):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             if level >= 3:
                 self.assertIn(f"[v{level}]", buf.getvalue())
 
@@ -622,7 +622,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
         try:
             with open(post_path, "rb") as f:
                 body = f.read()
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/post"),
                 connections=1,
                 duration=None,
@@ -634,14 +634,14 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
                 timeout_sec=5,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             self.assertEqual(stats.status_codes.get(200, 0), 3)
         finally:
             os.unlink(post_path)
 
     @unittest_run_loop
     async def test_latencies_recorded(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/slow"),
             connections=1,
             duration=None,
@@ -650,14 +650,14 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(len(stats.latencies), 3)
         for lat in stats.latencies:
             self.assertGreaterEqual(lat, 0.05)  # slow endpoint sleeps 100ms
 
     @unittest_run_loop
     async def test_random_param_cache_buster(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             duration=None,
@@ -667,7 +667,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.total_requests, 5)
         self.assertIn(200, stats.status_codes)
         self.assertEqual(stats.errors, 0)
@@ -675,7 +675,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_content_length_verification(self):
         self._vary_call_count = 0
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/vary-length"),
             connections=1,
             duration=None,
@@ -685,7 +685,7 @@ class TestBenchmarkIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertEqual(stats.total_requests, 9)
         # Some responses have different content length
         self.assertGreater(stats.content_length_errors, 0)
@@ -699,20 +699,20 @@ class TestPrintResultsEdgeCases(unittest.TestCase):
     def _make_config(self, **kwargs):
         defaults = dict(url="http://test/", connections=1, duration=1.0, threads=1)
         defaults.update(kwargs)
-        return pywrk.BenchmarkConfig(**defaults)
+        return pywrkr.BenchmarkConfig(**defaults)
 
     def test_empty_stats(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         config = self._make_config()
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_results(stats, 1.0, 1, 0.0, config)
+            pywrkr.print_results(stats, 1.0, 1, 0.0, config)
         output = buf.getvalue()
         self.assertIn("BENCHMARK RESULTS", output)
         self.assertIn("Total Requests:    0", output)
 
     def test_single_request(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 1
         stats.total_bytes = 100
         stats.latencies = [0.05]
@@ -720,26 +720,26 @@ class TestPrintResultsEdgeCases(unittest.TestCase):
         config = self._make_config()
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_results(stats, 1.0, 1, 0.0, config)
+            pywrkr.print_results(stats, 1.0, 1, 0.0, config)
         output = buf.getvalue()
         self.assertIn("Requests/sec:", output)
         # No stdev with single value
         self.assertNotIn("Stdev", output)
 
     def test_request_count_mode_display(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 50
         stats.latencies = [0.01] * 50
         stats.status_codes[200] = 50
         config = self._make_config(num_requests=50, duration=None)
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_results(stats, 2.0, 5, 0.0, config)
+            pywrkr.print_results(stats, 2.0, 5, 0.0, config)
         output = buf.getvalue()
         self.assertIn("50 requests", output)
 
     def test_ab_style_served_within_table(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 100
         stats.total_bytes = 10000
         stats.latencies = [0.01 * i for i in range(1, 101)]
@@ -747,7 +747,7 @@ class TestPrintResultsEdgeCases(unittest.TestCase):
         config = self._make_config()
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_results(stats, 5.0, 10, 0.0, config)
+            pywrkr.print_results(stats, 5.0, 10, 0.0, config)
         output = buf.getvalue()
         self.assertIn("Percentage of requests served within", output)
         self.assertIn("50%", output)
@@ -785,7 +785,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_basic_user_simulation(self):
         """10 users, 2s duration, no think time."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=10,
             duration=2.0,
@@ -794,14 +794,14 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_user_simulation_with_think_time(self):
         """5 users, 2s, 0.3s think time -> each user does ~5 requests max."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=5,
             duration=2.0,
@@ -811,7 +811,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         # With 0.3s think time, 2s duration: each user ~6 requests max
         # 5 users * ~6 = ~30, but server latency eats time too
         self.assertGreater(stats.total_requests, 5)
@@ -820,7 +820,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_user_simulation_with_ramp_up(self):
         """10 users with 1s ramp-up over 3s duration."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=10,
             duration=3.0,
@@ -829,14 +829,14 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 10)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_user_simulation_errors(self):
         """Users hitting error endpoint."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/error"),
             users=3,
             duration=1.0,
@@ -845,14 +845,14 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.errors, 0)
         self.assertIn(500, stats.status_codes)
 
     @unittest_run_loop
     async def test_user_simulation_slow_endpoint(self):
         """Users hitting slow endpoint - latencies should reflect delay."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/slow"),
             users=3,
             duration=1.0,
@@ -861,7 +861,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 0)
         for lat in stats.latencies:
             self.assertGreaterEqual(lat, 0.03)  # slow endpoint sleeps 50ms
@@ -872,7 +872,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 users=5,
                 duration=1.0,
@@ -882,7 +882,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
                 timeout_sec=5,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("total_requests", data)
@@ -896,7 +896,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             csv_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 users=5,
                 duration=1.0,
@@ -906,7 +906,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
                 timeout_sec=5,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             with open(csv_path) as f:
                 reader = csv.reader(f)
                 rows = list(reader)
@@ -918,7 +918,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_user_simulation_print_results(self):
         """Verify user mode prints user-specific info."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=5,
             duration=1.0,
@@ -928,7 +928,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         output = buf.getvalue()
         self.assertIn("Virtual Users", output)
         self.assertIn("Think Time", output)
@@ -938,7 +938,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_user_simulation_random_param(self):
         """User simulation with random cache-busting param."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=3,
             duration=1.0,
@@ -948,14 +948,14 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_think_time_jitter_range(self):
         """Verify think time with jitter stays within expected bounds."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=2,
             duration=2.0,
@@ -965,7 +965,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         # With 0.5s think time (0.25-0.75 jitter range), 2s duration:
         # each user does ~3-6 requests, 2 users = ~6-12 total
         self.assertGreater(stats.total_requests, 2)
@@ -979,11 +979,11 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
 class TestMakeUrl(unittest.TestCase):
     def test_no_random_param(self):
         url = "http://example.com/path"
-        self.assertEqual(pywrk.make_url(url, False), url)
+        self.assertEqual(pywrkr.make_url(url, False), url)
 
     def test_with_random_param_no_query(self):
         url = "http://example.com/path"
-        result = pywrk.make_url(url, True)
+        result = pywrkr.make_url(url, True)
         self.assertTrue(result.startswith("http://example.com/path?_cb="))
         # UUID hex is 32 chars
         cb_value = result.split("_cb=")[1]
@@ -992,12 +992,12 @@ class TestMakeUrl(unittest.TestCase):
 
     def test_with_random_param_existing_query(self):
         url = "http://example.com/path?foo=bar"
-        result = pywrk.make_url(url, True)
+        result = pywrkr.make_url(url, True)
         self.assertTrue(result.startswith("http://example.com/path?foo=bar&_cb="))
 
     def test_uniqueness(self):
         url = "http://example.com/"
-        results = {pywrk.make_url(url, True) for _ in range(100)}
+        results = {pywrkr.make_url(url, True) for _ in range(100)}
         self.assertEqual(len(results), 100)
 
     def test_preserves_url_without_flag(self):
@@ -1006,16 +1006,16 @@ class TestMakeUrl(unittest.TestCase):
             "http://example.com/path?key=val",
             "https://host:8080/a/b/c?x=1&y=2",
         ]:
-            self.assertEqual(pywrk.make_url(url, False), url)
+            self.assertEqual(pywrkr.make_url(url, False), url)
 
 
 class TestBenchmarkConfigRandomParam(unittest.TestCase):
     def test_default_false(self):
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/")
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/")
         self.assertFalse(cfg.random_param)
 
     def test_set_true(self):
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/", random_param=True)
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/", random_param=True)
         self.assertTrue(cfg.random_param)
 
 
@@ -1023,12 +1023,12 @@ class TestPrintResultsUserMode(unittest.TestCase):
     """Test print_results with user simulation config."""
 
     def test_user_mode_display(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 100
         stats.total_bytes = 10000
         stats.latencies = [0.05] * 100
         stats.status_codes[200] = 100
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://test/",
             users=10,
             duration=10.0,
@@ -1038,7 +1038,7 @@ class TestPrintResultsUserMode(unittest.TestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_results(stats, 10.0, 10, 0.0, config)
+            pywrkr.print_results(stats, 10.0, 10, 0.0, config)
         output = buf.getvalue()
         self.assertIn("10 virtual users", output)
         self.assertIn("Virtual Users:     10", output)
@@ -1054,7 +1054,7 @@ class TestRateLimiter(unittest.TestCase):
     def test_basic_rate_limiting(self):
         """10 acquires at rate=100 should take ~0.09s (first is instant)."""
         async def _run():
-            rl = pywrk.RateLimiter(rate=100)
+            rl = pywrkr.RateLimiter(rate=100)
             start = time.monotonic()
             for _ in range(10):
                 await rl.acquire()
@@ -1069,7 +1069,7 @@ class TestRateLimiter(unittest.TestCase):
     def test_rate_limiter_fairness(self):
         """Intervals between acquires should be roughly equal."""
         async def _run():
-            rl = pywrk.RateLimiter(rate=50)  # 20ms intervals
+            rl = pywrkr.RateLimiter(rate=50)  # 20ms intervals
             times = []
             for _ in range(6):
                 await rl.acquire()
@@ -1085,7 +1085,7 @@ class TestRateLimiter(unittest.TestCase):
     def test_concurrent_access(self):
         """Multiple coroutines sharing one limiter should respect rate."""
         async def _run():
-            rl = pywrk.RateLimiter(rate=100)
+            rl = pywrkr.RateLimiter(rate=100)
             count = {"n": 0}
 
             async def _worker():
@@ -1107,7 +1107,7 @@ class TestRateLimiter(unittest.TestCase):
     def test_waits_counter(self):
         """The waits counter should track how many times the limiter slept."""
         async def _run():
-            rl = pywrk.RateLimiter(rate=200)
+            rl = pywrkr.RateLimiter(rate=200)
             for _ in range(10):
                 await rl.acquire()
             return rl.waits
@@ -1119,7 +1119,7 @@ class TestRateLimiter(unittest.TestCase):
     def test_rate_ramp(self):
         """Rate should increase linearly with ramp mode."""
         async def _run():
-            rl = pywrk.RateLimiter(rate=50, end_rate=200, ramp_duration=1.0)
+            rl = pywrkr.RateLimiter(rate=50, end_rate=200, ramp_duration=1.0)
             # At start, rate=50 (interval=20ms). At end, rate=200 (interval=5ms)
             start = time.monotonic()
             for _ in range(10):
@@ -1136,13 +1136,13 @@ class TestRateLimiter(unittest.TestCase):
 class TestBenchmarkConfigRate(unittest.TestCase):
     def test_rate_defaults_none(self):
         """BenchmarkConfig rate should default to None."""
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/")
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/")
         self.assertIsNone(cfg.rate)
         self.assertIsNone(cfg.rate_ramp)
 
     def test_rate_field_set(self):
         """BenchmarkConfig rate field should be settable."""
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/", rate=500.0, rate_ramp=1000.0)
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/", rate=500.0, rate_ramp=1000.0)
         self.assertEqual(cfg.rate, 500.0)
         self.assertEqual(cfg.rate_ramp, 1000.0)
 
@@ -1168,7 +1168,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_constant_rate_with_duration(self):
         """--rate 50 -d 2 should produce ~100 requests."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=2,
             duration=2.0,
@@ -1177,7 +1177,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
             rate=50.0,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         # At 50 req/s for 2s, expect ~100 requests (allow tolerance)
         self.assertGreaterEqual(stats.total_requests, 70)
         self.assertLessEqual(stats.total_requests, 130)
@@ -1185,7 +1185,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_constant_rate_with_request_count(self):
         """--rate 50 -n 20 should take ~0.4s."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=2,
             duration=None,
@@ -1196,7 +1196,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         )
         start = time.monotonic()
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         elapsed = time.monotonic() - start
         self.assertGreaterEqual(stats.total_requests, 20)
         # 20 requests at 50/s = ~0.4s minimum
@@ -1205,7 +1205,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_rate_limit_with_multiple_connections(self):
         """Rate limit should be global across all connections."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=4,
             duration=2.0,
@@ -1214,7 +1214,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
             rate=40.0,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         # 40 req/s for 2s = ~80 total, shared across 4 connections
         self.assertGreaterEqual(stats.total_requests, 50)
         self.assertLessEqual(stats.total_requests, 110)
@@ -1222,7 +1222,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_rate_ramp_mode(self):
         """Rate ramp from 20 to 80 over 2s should produce moderate request count."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=2,
             duration=2.0,
@@ -1232,7 +1232,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
             rate_ramp=80.0,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         # Average rate ~50 req/s over 2s = ~100 total
         self.assertGreater(stats.total_requests, 40)
         self.assertLess(stats.total_requests, 200)
@@ -1240,7 +1240,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_results_show_target_rps(self):
         """Results should show target vs actual RPS when rate is set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=1.0,
@@ -1250,7 +1250,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("Target RPS:", output)
         self.assertIn("30.00", output)
@@ -1259,7 +1259,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_results_show_ramp_target(self):
         """Results should show ramp target RPS when rate ramp is set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=1.0,
@@ -1270,7 +1270,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("Target RPS:", output)
         self.assertIn("Ramp Target RPS:", output)
@@ -1278,7 +1278,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_rate_with_user_simulation(self):
         """Rate limiting with user simulation (think_time=0) should throttle."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             users=3,
             duration=2.0,
@@ -1288,7 +1288,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
             rate=30.0,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         # 30 req/s for 2s = ~60 total across 3 users
         self.assertGreaterEqual(stats.total_requests, 35)
         self.assertLessEqual(stats.total_requests, 90)
@@ -1296,7 +1296,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_banner_shows_rate_limit(self):
         """Banner should show rate limit info."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=0.5,
@@ -1306,7 +1306,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("Rate Limit: 500 req/s", output)
 
@@ -1316,7 +1316,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 connections=1,
                 duration=1.0,
@@ -1326,7 +1326,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
                 json_output=json_path,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertEqual(data["target_rps"], 25.0)
@@ -1342,7 +1342,7 @@ class TestRateLimitIntegration(AioHTTPTestCase):
 
 class TestScenarioStep(unittest.TestCase):
     def test_defaults(self):
-        step = pywrk.ScenarioStep(path="/")
+        step = pywrkr.ScenarioStep(path="/")
         self.assertEqual(step.method, "GET")
         self.assertIsNone(step.body)
         self.assertEqual(step.headers, {})
@@ -1352,7 +1352,7 @@ class TestScenarioStep(unittest.TestCase):
         self.assertIsNone(step.name)
 
     def test_custom_values(self):
-        step = pywrk.ScenarioStep(
+        step = pywrkr.ScenarioStep(
             path="/login",
             method="POST",
             body={"user": "test"},
@@ -1384,7 +1384,7 @@ class TestScenarioLoading(unittest.TestCase):
             json.dump(data, f)
             path = f.name
         try:
-            scenario = pywrk.load_scenario(path)
+            scenario = pywrkr.load_scenario(path)
             self.assertEqual(scenario.name, "Test Flow")
             self.assertEqual(scenario.think_time, 0.5)
             self.assertEqual(len(scenario.steps), 2)
@@ -1397,7 +1397,7 @@ class TestScenarioLoading(unittest.TestCase):
 
     def test_load_missing_file(self):
         with self.assertRaises(FileNotFoundError):
-            pywrk.load_scenario("/nonexistent/scenario.json")
+            pywrkr.load_scenario("/nonexistent/scenario.json")
 
     def test_load_invalid_json(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -1405,7 +1405,7 @@ class TestScenarioLoading(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(Exception):
-                pywrk.load_scenario(path)
+                pywrkr.load_scenario(path)
         finally:
             os.unlink(path)
 
@@ -1416,7 +1416,7 @@ class TestScenarioLoading(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(ValueError):
-                pywrk.load_scenario(path)
+                pywrkr.load_scenario(path)
         finally:
             os.unlink(path)
 
@@ -1427,7 +1427,7 @@ class TestScenarioLoading(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(ValueError):
-                pywrk.load_scenario(path)
+                pywrkr.load_scenario(path)
         finally:
             os.unlink(path)
 
@@ -1438,7 +1438,7 @@ class TestScenarioLoading(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(ValueError):
-                pywrk.load_scenario(path)
+                pywrkr.load_scenario(path)
         finally:
             os.unlink(path)
 
@@ -1448,7 +1448,7 @@ class TestScenarioLoading(unittest.TestCase):
             json.dump(data, f)
             path = f.name
         try:
-            scenario = pywrk.load_scenario(path)
+            scenario = pywrkr.load_scenario(path)
             self.assertEqual(scenario.name, "Unnamed Scenario")
             self.assertEqual(scenario.think_time, 0.0)
             self.assertEqual(len(scenario.steps), 1)
@@ -1462,7 +1462,7 @@ class TestScenarioLoading(unittest.TestCase):
             path = f.name
         try:
             with self.assertRaises(ValueError):
-                pywrk.load_scenario(path)
+                pywrkr.load_scenario(path)
         finally:
             os.unlink(path)
 
@@ -1483,7 +1483,7 @@ class TestScenarioLoading(unittest.TestCase):
             json.dump(data, f)
             path = f.name
         try:
-            scenario = pywrk.load_scenario(path)
+            scenario = pywrkr.load_scenario(path)
             step = scenario.steps[0]
             self.assertEqual(step.path, "/api")
             self.assertEqual(step.method, "PUT")
@@ -1553,8 +1553,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=3,
                 duration=2.0,
@@ -1564,7 +1564,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             self.assertIn(200, stats.status_codes)
             self.assertGreater(len(stats.step_latencies), 0)
@@ -1581,8 +1581,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=1.0,
@@ -1592,7 +1592,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             # Allow small number of timeout errors at end of duration window
             self.assertLessEqual(stats.errors, 2)
@@ -1609,8 +1609,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=1.0,
@@ -1620,7 +1620,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             self.assertEqual(stats.errors, stats.total_requests)
             has_assert_err = any("AssertStatus" in k for k in stats.error_types)
@@ -1639,8 +1639,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=1,
                 duration=1.0,
@@ -1650,7 +1650,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             self.assertGreater(stats.errors, 0)
             has_body_err = any("AssertBody" in k for k in stats.error_types)
@@ -1668,8 +1668,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=2.0,
@@ -1680,7 +1680,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 2)
             self.assertLess(stats.total_requests, 30)
         finally:
@@ -1697,8 +1697,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=1.0,
@@ -1708,7 +1708,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             # Allow small number of timeout errors at end of duration window
             self.assertLessEqual(stats.errors, 2)
@@ -1728,8 +1728,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=1,
                 duration=1.0,
@@ -1740,7 +1740,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             self.assertGreater(stats.total_requests, 0)
             self.assertIn(200, stats.status_codes)
         finally:
@@ -1759,8 +1759,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            scenario = pywrk.load_scenario(scenario_path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(scenario_path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=1.0,
@@ -1771,7 +1771,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("step_stats", data)
@@ -1798,8 +1798,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 connections=2,
                 duration=1.0,
@@ -1808,7 +1808,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
                 scenario=scenario,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             self.assertGreater(stats.total_requests, 0)
             self.assertIn(200, stats.status_codes)
             self.assertGreater(len(stats.step_latencies), 0)
@@ -1826,8 +1826,8 @@ class TestScenarioIntegration(AioHTTPTestCase):
         }
         path = self._make_scenario_file(scenario_data)
         try:
-            scenario = pywrk.load_scenario(path)
-            config = pywrk.BenchmarkConfig(
+            scenario = pywrkr.load_scenario(path)
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=2,
                 duration=1.0,
@@ -1838,7 +1838,7 @@ class TestScenarioIntegration(AioHTTPTestCase):
             )
             buf = StringIO()
             with patch("sys.stdout", buf):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             output = buf.getvalue()
             self.assertIn("PER-STEP LATENCY", output)
             self.assertIn("Home", output)
@@ -1856,7 +1856,7 @@ class TestLiveDashboard(unittest.TestCase):
     """Unit tests for LiveDashboard class."""
 
     def _make_stats(self, n=50):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = n
         stats.total_bytes = n * 1024
         stats.errors = 2
@@ -1868,92 +1868,92 @@ class TestLiveDashboard(unittest.TestCase):
     def test_dashboard_creation(self):
         """Test LiveDashboard can be created with mock stats."""
         stats = [self._make_stats()]
-        config = pywrk.BenchmarkConfig(url="http://example.com/", duration=10.0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic()
-        dashboard = pywrk.LiveDashboard(stats, config, start_time)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
         self.assertEqual(dashboard.config.url, "http://example.com/")
         self.assertIsNone(dashboard.active_users)
 
     def test_dashboard_creation_with_active_users(self):
         """Test LiveDashboard with active_users dict."""
         stats = [self._make_stats()]
-        config = pywrk.BenchmarkConfig(url="http://example.com/", users=10, duration=10.0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", users=10, duration=10.0)
         start_time = time.monotonic()
         active_users = {"count": 5}
-        dashboard = pywrk.LiveDashboard(stats, config, start_time, active_users)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
         self.assertEqual(dashboard.active_users["count"], 5)
 
-    @unittest.skipUnless(pywrk_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_renders_without_errors(self):
         """Test _build_display() returns a Panel without crashing."""
         stats = [self._make_stats()]
-        config = pywrk.BenchmarkConfig(url="http://example.com/", duration=10.0)
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic() - 5.0  # simulate 5s elapsed
-        dashboard = pywrk.LiveDashboard(stats, config, start_time)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
         panel = dashboard._build_display()
         # Panel should be a rich Panel object
         from rich.panel import Panel
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrk_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_with_empty_stats(self):
         """Test dashboard renders with no requests yet."""
-        stats = [pywrk.WorkerStats()]
-        config = pywrk.BenchmarkConfig(url="http://example.com/", duration=10.0)
+        stats = [pywrkr.WorkerStats()]
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic()
-        dashboard = pywrk.LiveDashboard(stats, config, start_time)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
         # Should not raise
         panel = dashboard._build_display()
         from rich.panel import Panel
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrk_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_request_count_mode(self):
         """Test dashboard renders in request-count mode."""
         stats = [self._make_stats(20)]
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://example.com/", num_requests=100, duration=None
         )
         start_time = time.monotonic() - 2.0
-        dashboard = pywrk.LiveDashboard(stats, config, start_time)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
         panel = dashboard._build_display()
         from rich.panel import Panel
         self.assertIsInstance(panel, Panel)
 
-    @unittest.skipUnless(pywrk_main.RICH_AVAILABLE, "rich not installed")
+    @unittest.skipUnless(pywrkr_main.RICH_AVAILABLE, "rich not installed")
     def test_dashboard_user_mode(self):
         """Test dashboard renders in user simulation mode."""
         stats = [self._make_stats()]
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://example.com/", users=50, duration=60.0
         )
         start_time = time.monotonic() - 10.0
         active_users = {"count": 50}
-        dashboard = pywrk.LiveDashboard(stats, config, start_time, active_users)
+        dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
         panel = dashboard._build_display()
         from rich.panel import Panel
         self.assertIsInstance(panel, Panel)
 
     def test_dashboard_fallback_when_rich_unavailable(self):
         """Test that --live falls back gracefully when rich is not installed."""
-        original = pywrk_main.RICH_AVAILABLE
+        original = pywrkr_main.RICH_AVAILABLE
         try:
-            pywrk_main.RICH_AVAILABLE = False
-            config = pywrk.BenchmarkConfig(
+            pywrkr_main.RICH_AVAILABLE = False
+            config = pywrkr.BenchmarkConfig(
                 url="http://example.com/", live_dashboard=True
             )
             # When RICH_AVAILABLE is False and live_dashboard is True,
             # run_benchmark should fall back to show_progress
             self.assertTrue(config.live_dashboard)
-            self.assertFalse(pywrk_main.RICH_AVAILABLE)
+            self.assertFalse(pywrkr_main.RICH_AVAILABLE)
         finally:
-            pywrk_main.RICH_AVAILABLE = original
+            pywrkr_main.RICH_AVAILABLE = original
 
     def test_live_flag_in_config(self):
         """Test that live_dashboard field works in BenchmarkConfig."""
-        cfg = pywrk.BenchmarkConfig(url="http://localhost/")
+        cfg = pywrkr.BenchmarkConfig(url="http://localhost/")
         self.assertFalse(cfg.live_dashboard)
-        cfg2 = pywrk.BenchmarkConfig(url="http://localhost/", live_dashboard=True)
+        cfg2 = pywrkr.BenchmarkConfig(url="http://localhost/", live_dashboard=True)
         self.assertTrue(cfg2.live_dashboard)
 
 
@@ -1974,7 +1974,7 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_benchmark_with_live_flag(self):
         """Test benchmark with --live flag runs and completes."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=1.0,
@@ -1983,14 +1983,14 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
             live_dashboard=True,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_user_simulation_with_live_flag(self):
         """Test user simulation with --live flag runs and completes."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=3,
             duration=1.0,
@@ -2000,17 +2000,17 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
             live_dashboard=True,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertIn(200, stats.status_codes)
 
     @unittest_run_loop
     async def test_benchmark_with_live_flag_no_rich(self):
         """Test benchmark falls back when rich is unavailable."""
-        original = pywrk_main.RICH_AVAILABLE
+        original = pywrkr_main.RICH_AVAILABLE
         try:
-            pywrk_main.RICH_AVAILABLE = False
-            config = pywrk.BenchmarkConfig(
+            pywrkr_main.RICH_AVAILABLE = False
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=2,
                 duration=1.0,
@@ -2020,12 +2020,12 @@ class TestLiveDashboardIntegration(AioHTTPTestCase):
             )
             buf = StringIO()
             with patch("sys.stdout", buf):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             self.assertGreater(stats.total_requests, 0)
             output = buf.getvalue()
             self.assertIn("Warning", output)
         finally:
-            pywrk_main.RICH_AVAILABLE = original
+            pywrkr_main.RICH_AVAILABLE = original
 
 
 # ---------------------------------------------------------------------------
@@ -2051,20 +2051,20 @@ class TestPackaging(unittest.TestCase):
             self.assertIn("[project]", content)
             return
         self.assertIn("project", data)
-        self.assertEqual(data["project"]["name"], "pywrk")
-        self.assertEqual(data["project"]["version"], "0.1.0")
+        self.assertEqual(data["project"]["name"], "pywrkr")
+        self.assertEqual(data["project"]["version"], "0.9.1")
 
     def test_entry_point_defined(self):
-        """Test that the pywrk entry point is configured."""
+        """Test that the pywrkr entry point is configured."""
         path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
         with open(path) as f:
             content = f.read()
-        self.assertIn("pywrk = ", content)
-        self.assertIn("pywrk.main:main", content)
+        self.assertIn("pywrkr = ", content)
+        self.assertIn("pywrkr.main:main", content)
 
     def test_version_accessible(self):
-        """Test that pywrk module has main() callable."""
-        self.assertTrue(callable(pywrk.cli_main))
+        """Test that pywrkr module has main() callable."""
+        self.assertTrue(callable(pywrkr.cli_main))
 
     def test_license_file_exists(self):
         """Test LICENSE file exists."""
@@ -2092,7 +2092,7 @@ class TestLatencyBreakdown(unittest.TestCase):
     """Unit tests for the LatencyBreakdown dataclass and aggregation."""
 
     def test_defaults(self):
-        bd = pywrk.LatencyBreakdown()
+        bd = pywrkr.LatencyBreakdown()
         self.assertEqual(bd.dns, 0.0)
         self.assertEqual(bd.connect, 0.0)
         self.assertEqual(bd.tls, 0.0)
@@ -2101,7 +2101,7 @@ class TestLatencyBreakdown(unittest.TestCase):
         self.assertFalse(bd.is_reused)
 
     def test_custom_values(self):
-        bd = pywrk.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.03, ttfb=0.04, transfer=0.05)
+        bd = pywrkr.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.03, ttfb=0.04, transfer=0.05)
         self.assertAlmostEqual(bd.dns, 0.01)
         self.assertAlmostEqual(bd.connect, 0.02)
         self.assertAlmostEqual(bd.tls, 0.03)
@@ -2109,12 +2109,12 @@ class TestLatencyBreakdown(unittest.TestCase):
         self.assertAlmostEqual(bd.transfer, 0.05)
 
     def test_aggregation_empty(self):
-        result = pywrk.aggregate_breakdowns([])
+        result = pywrkr.aggregate_breakdowns([])
         self.assertEqual(result, {})
 
     def test_aggregation_single(self):
-        bd = pywrk.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.0, ttfb=0.05, transfer=0.03)
-        result = pywrk.aggregate_breakdowns([bd])
+        bd = pywrkr.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.0, ttfb=0.05, transfer=0.03)
+        result = pywrkr.aggregate_breakdowns([bd])
         self.assertIn("dns", result)
         self.assertAlmostEqual(result["dns"]["avg"], 0.01)
         self.assertAlmostEqual(result["connect"]["avg"], 0.02)
@@ -2125,11 +2125,11 @@ class TestLatencyBreakdown(unittest.TestCase):
 
     def test_aggregation_multiple(self):
         breakdowns = [
-            pywrk.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.0, ttfb=0.05, transfer=0.03),
-            pywrk.LatencyBreakdown(dns=0.02, connect=0.04, tls=0.0, ttfb=0.10, transfer=0.06),
-            pywrk.LatencyBreakdown(dns=0.03, connect=0.06, tls=0.0, ttfb=0.15, transfer=0.09, is_reused=True),
+            pywrkr.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.0, ttfb=0.05, transfer=0.03),
+            pywrkr.LatencyBreakdown(dns=0.02, connect=0.04, tls=0.0, ttfb=0.10, transfer=0.06),
+            pywrkr.LatencyBreakdown(dns=0.03, connect=0.06, tls=0.0, ttfb=0.15, transfer=0.09, is_reused=True),
         ]
-        result = pywrk.aggregate_breakdowns(breakdowns)
+        result = pywrkr.aggregate_breakdowns(breakdowns)
         self.assertAlmostEqual(result["dns"]["avg"], 0.02)
         self.assertAlmostEqual(result["dns"]["min"], 0.01)
         self.assertAlmostEqual(result["dns"]["max"], 0.03)
@@ -2144,28 +2144,28 @@ class TestLatencyBreakdown(unittest.TestCase):
 
     def test_aggregation_connection_reuse_counts(self):
         breakdowns = [
-            pywrk.LatencyBreakdown(is_reused=False),
-            pywrk.LatencyBreakdown(is_reused=True),
-            pywrk.LatencyBreakdown(is_reused=True),
-            pywrk.LatencyBreakdown(is_reused=True),
-            pywrk.LatencyBreakdown(is_reused=False),
+            pywrkr.LatencyBreakdown(is_reused=False),
+            pywrkr.LatencyBreakdown(is_reused=True),
+            pywrkr.LatencyBreakdown(is_reused=True),
+            pywrkr.LatencyBreakdown(is_reused=True),
+            pywrkr.LatencyBreakdown(is_reused=False),
         ]
-        result = pywrk.aggregate_breakdowns(breakdowns)
+        result = pywrkr.aggregate_breakdowns(breakdowns)
         self.assertEqual(result["new_connections"], 2)
         self.assertEqual(result["reused_connections"], 3)
 
     def test_worker_stats_breakdowns_field(self):
-        ws = pywrk.WorkerStats()
+        ws = pywrkr.WorkerStats()
         self.assertEqual(ws.breakdowns, [])
-        ws.breakdowns.append(pywrk.LatencyBreakdown(dns=0.01))
+        ws.breakdowns.append(pywrkr.LatencyBreakdown(dns=0.01))
         self.assertEqual(len(ws.breakdowns), 1)
 
     def test_config_latency_breakdown_default_false(self):
-        config = pywrk.BenchmarkConfig(url="http://example.com")
+        config = pywrkr.BenchmarkConfig(url="http://example.com")
         self.assertFalse(config.latency_breakdown)
 
     def test_config_latency_breakdown_enabled(self):
-        config = pywrk.BenchmarkConfig(url="http://example.com", latency_breakdown=True)
+        config = pywrkr.BenchmarkConfig(url="http://example.com", latency_breakdown=True)
         self.assertTrue(config.latency_breakdown)
 
 
@@ -2190,7 +2190,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_breakdown_captures_phases(self):
         """Test that breakdown captures TTFB and transfer for HTTP requests."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             num_requests=5,
@@ -2199,7 +2199,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
             latency_breakdown=True,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertGreater(len(stats.breakdowns), 0)
         # At least some breakdowns should have non-zero TTFB
@@ -2209,7 +2209,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_breakdown_in_results_output(self):
         """Test that breakdown stats appear in printed output when enabled."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             num_requests=5,
@@ -2219,7 +2219,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         text = output.getvalue()
         self.assertIn("LATENCY BREAKDOWN", text)
         self.assertIn("TTFB", text)
@@ -2234,7 +2234,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url("/"),
                 connections=1,
                 num_requests=5,
@@ -2244,7 +2244,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
                 json_output=json_path,
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("latency_breakdown", data)
@@ -2267,7 +2267,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_breakdown_disabled_by_default(self):
         """Test that breakdown has no overhead when disabled (no breakdowns collected)."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             num_requests=5,
@@ -2276,14 +2276,14 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
             latency_breakdown=False,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreater(stats.total_requests, 0)
         self.assertEqual(len(stats.breakdowns), 0)
 
     @unittest_run_loop
     async def test_breakdown_multiple_requests_aggregated(self):
         """Test that multiple requests produce aggregated breakdown stats."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             num_requests=10,
@@ -2292,9 +2292,9 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
             latency_breakdown=True,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         self.assertGreater(len(stats.breakdowns), 1)
-        agg = pywrk.aggregate_breakdowns(stats.breakdowns)
+        agg = pywrkr.aggregate_breakdowns(stats.breakdowns)
         self.assertIn("total", agg)
         self.assertIn("ttfb", agg)
         self.assertGreater(agg["total"]["avg"], 0)
@@ -2305,7 +2305,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_breakdown_disabled_no_output_section(self):
         """Test that LATENCY BREAKDOWN section does NOT appear when disabled."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             num_requests=3,
@@ -2315,7 +2315,7 @@ class TestLatencyBreakdownIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         text = output.getvalue()
         self.assertNotIn("LATENCY BREAKDOWN", text)
 
@@ -2328,7 +2328,7 @@ class TestStepResult(unittest.TestCase):
     """Test StepResult dataclass."""
 
     def test_defaults(self):
-        sr = pywrk.StepResult(
+        sr = pywrkr.StepResult(
             users=10, rps=5.0, p50=0.1, p95=0.2, p99=0.3,
             error_rate=0.0, total_requests=50, total_errors=0, passed=True,
         )
@@ -2337,7 +2337,7 @@ class TestStepResult(unittest.TestCase):
         self.assertTrue(sr.passed)
 
     def test_failed_step(self):
-        sr = pywrk.StepResult(
+        sr = pywrkr.StepResult(
             users=100, rps=50.0, p50=1.0, p95=6.0, p99=8.0,
             error_rate=5.0, total_requests=500, total_errors=25, passed=False,
         )
@@ -2349,7 +2349,7 @@ class TestAutofindConfig(unittest.TestCase):
     """Test AutofindConfig dataclass defaults and custom values."""
 
     def test_defaults(self):
-        cfg = pywrk.AutofindConfig(url="http://localhost:8080/")
+        cfg = pywrkr.AutofindConfig(url="http://localhost:8080/")
         self.assertEqual(cfg.max_error_rate, 1.0)
         self.assertEqual(cfg.max_p95, 5.0)
         self.assertEqual(cfg.step_duration, 30.0)
@@ -2364,7 +2364,7 @@ class TestAutofindConfig(unittest.TestCase):
         self.assertIsNone(cfg.json_output)
 
     def test_custom_values(self):
-        cfg = pywrk.AutofindConfig(
+        cfg = pywrkr.AutofindConfig(
             url="http://example.com/api",
             max_error_rate=2.5,
             max_p95=3.0,
@@ -2394,44 +2394,44 @@ class TestAutofindHelpers(unittest.TestCase):
     """Test autofind helper functions."""
 
     def test_format_latency_short_ms(self):
-        self.assertEqual(pywrk._format_latency_short(0.120), "120ms")
-        self.assertEqual(pywrk._format_latency_short(0.001), "1ms")
+        self.assertEqual(pywrkr._format_latency_short(0.120), "120ms")
+        self.assertEqual(pywrkr._format_latency_short(0.001), "1ms")
 
     def test_format_latency_short_s(self):
-        self.assertEqual(pywrk._format_latency_short(1.5), "1.5s")
-        self.assertEqual(pywrk._format_latency_short(10.0), "10.0s")
+        self.assertEqual(pywrkr._format_latency_short(1.5), "1.5s")
+        self.assertEqual(pywrkr._format_latency_short(10.0), "10.0s")
 
     def test_step_passed_ok(self):
-        cfg = pywrk.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
-        step = pywrk.StepResult(
+        cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
+        step = pywrkr.StepResult(
             users=10, rps=10.0, p50=0.1, p95=0.5, p99=1.0,
             error_rate=0.0, total_requests=100, total_errors=0, passed=True,
         )
-        self.assertTrue(pywrk._step_passed(step, cfg))
+        self.assertTrue(pywrkr._step_passed(step, cfg))
 
     def test_step_passed_error_rate_exceeded(self):
-        cfg = pywrk.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
-        step = pywrk.StepResult(
+        cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
+        step = pywrkr.StepResult(
             users=10, rps=10.0, p50=0.1, p95=0.5, p99=1.0,
             error_rate=2.0, total_requests=100, total_errors=2, passed=True,
         )
-        self.assertFalse(pywrk._step_passed(step, cfg))
+        self.assertFalse(pywrkr._step_passed(step, cfg))
 
     def test_step_passed_p95_exceeded(self):
-        cfg = pywrk.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
-        step = pywrk.StepResult(
+        cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=1.0, max_p95=5.0)
+        step = pywrkr.StepResult(
             users=10, rps=10.0, p50=0.1, p95=6.0, p99=8.0,
             error_rate=0.0, total_requests=100, total_errors=0, passed=True,
         )
-        self.assertFalse(pywrk._step_passed(step, cfg))
+        self.assertFalse(pywrkr._step_passed(step, cfg))
 
     def test_extract_step_result(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 100
         stats.errors = 2
         stats.latencies = [0.1 * i for i in range(1, 101)]  # 0.1 to 10.0
-        cfg = pywrk.AutofindConfig(url="http://x/", max_error_rate=5.0, max_p95=20.0)
-        result = pywrk._extract_step_result(stats, 10.0, 20, cfg)
+        cfg = pywrkr.AutofindConfig(url="http://x/", max_error_rate=5.0, max_p95=20.0)
+        result = pywrkr._extract_step_result(stats, 10.0, 20, cfg)
         self.assertEqual(result.users, 20)
         self.assertAlmostEqual(result.rps, 10.0)
         self.assertAlmostEqual(result.error_rate, 2.0)
@@ -2441,11 +2441,11 @@ class TestAutofindHelpers(unittest.TestCase):
         self.assertTrue(result.passed)
 
     def test_extract_step_result_no_latencies(self):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = 0
         stats.errors = 0
-        cfg = pywrk.AutofindConfig(url="http://x/")
-        result = pywrk._extract_step_result(stats, 10.0, 5, cfg)
+        cfg = pywrkr.AutofindConfig(url="http://x/")
+        result = pywrkr._extract_step_result(stats, 10.0, 5, cfg)
         self.assertEqual(result.p50, 0.0)
         self.assertEqual(result.p95, 0.0)
         self.assertEqual(result.p99, 0.0)
@@ -2477,7 +2477,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_healthy_server(self):
         """Autofind with a healthy server should find capacity > 0."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/"),
             max_error_rate=1.0,
             max_p95=5.0,
@@ -2491,7 +2491,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         self.assertGreater(len(steps), 0)
         # At least the first step should pass (healthy server)
         self.assertTrue(steps[0].passed)
@@ -2501,7 +2501,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_error_endpoint(self):
         """Autofind hitting error endpoint should fail quickly."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/error"),
             max_error_rate=1.0,
             max_p95=5.0,
@@ -2515,7 +2515,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         # The first step should fail (100% error rate)
         self.assertFalse(steps[0].passed)
         self.assertGreater(steps[0].error_rate, 1.0)
@@ -2525,7 +2525,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_respects_max_error_rate(self):
         """Autofind should mark steps as failed when error rate exceeds threshold."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/error"),
             max_error_rate=50.0,  # very high threshold
             max_p95=50.0,
@@ -2539,7 +2539,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         # All steps pass because threshold is very high (50%)
         # but error rate is 100%, so all should fail
         for s in steps:
@@ -2548,7 +2548,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_respects_max_p95(self):
         """Autofind should fail when p95 exceeds threshold on slow endpoint."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/slow"),
             max_error_rate=100.0,  # ignore errors
             max_p95=0.1,  # very tight p95 threshold (100ms)
@@ -2562,7 +2562,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         # p95 should exceed 100ms since handler sleeps 500ms
         self.assertFalse(steps[0].passed)
         self.assertGreater(steps[0].p95, 0.1)
@@ -2574,7 +2574,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
             json_path = f.name
 
         try:
-            config = pywrk.AutofindConfig(
+            config = pywrkr.AutofindConfig(
                 url=self._url("/"),
                 max_error_rate=1.0,
                 max_p95=5.0,
@@ -2589,7 +2589,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
             )
             output = StringIO()
             with patch("sys.stdout", output):
-                steps = await pywrk.run_autofind(config)
+                steps = await pywrkr.run_autofind(config)
 
             with open(json_path) as f:
                 data = json.load(f)
@@ -2620,7 +2620,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         # has 500ms delay, so even 2 users will fail p95=0.3s.
         # Start=2, multiplier=2, so: 2 (fail) -> no binary search possible
         # Let's use a setup where first step passes but second fails.
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/"),
             max_error_rate=1.0,
             max_p95=5.0,
@@ -2634,7 +2634,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         # With a healthy server, all steps should pass
         for s in steps:
             self.assertTrue(s.passed)
@@ -2644,7 +2644,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_custom_step_duration(self):
         """Autofind should respect custom step_duration."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/"),
             step_duration=3.0,  # 3 second steps
             start_users=2,
@@ -2657,7 +2657,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         t0 = time.monotonic()
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         elapsed = time.monotonic() - t0
         # Should take at least step_duration * number_of_steps
         self.assertGreaterEqual(elapsed, 3.0 * len(steps) * 0.8)
@@ -2665,7 +2665,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_autofind_prints_summary_table(self):
         """Autofind should print a formatted summary table."""
-        config = pywrk.AutofindConfig(
+        config = pywrkr.AutofindConfig(
             url=self._url("/"),
             step_duration=2.0,
             start_users=2,
@@ -2677,7 +2677,7 @@ class TestAutofindIntegration(AioHTTPTestCase):
         )
         output = StringIO()
         with patch("sys.stdout", output):
-            steps = await pywrk.run_autofind(config)
+            steps = await pywrkr.run_autofind(config)
         text = output.getvalue()
         self.assertIn("AUTOFIND RESULTS", text)
         self.assertIn("Maximum sustainable load:", text)
@@ -2699,7 +2699,7 @@ class TestMetadataTags(unittest.TestCase):
     """Tests for --tag metadata feature."""
 
     def _make_stats(self, n=100):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = n
         stats.total_bytes = n * 1024
         stats.errors = 2
@@ -2711,11 +2711,11 @@ class TestMetadataTags(unittest.TestCase):
     def test_tags_included_in_results_dict(self):
         """Tags should appear in build_results_dict output."""
         stats = self._make_stats()
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://test/",
             tags={"environment": "staging", "build": "123"},
         )
-        result = pywrk.build_results_dict(stats, 10.0, 50, config)
+        result = pywrkr.build_results_dict(stats, 10.0, 50, config)
         self.assertIn("tags", result)
         self.assertEqual(result["tags"]["environment"], "staging")
         self.assertEqual(result["tags"]["build"], "123")
@@ -2723,14 +2723,14 @@ class TestMetadataTags(unittest.TestCase):
     def test_empty_tags_backward_compatibility(self):
         """Empty tags should not appear in results dict."""
         stats = self._make_stats()
-        config = pywrk.BenchmarkConfig(url="http://test/")
-        result = pywrk.build_results_dict(stats, 10.0, 50, config)
+        config = pywrkr.BenchmarkConfig(url="http://test/")
+        result = pywrkr.build_results_dict(stats, 10.0, 50, config)
         self.assertNotIn("tags", result)
 
     def test_tags_without_config(self):
         """build_results_dict without config should not have tags."""
         stats = self._make_stats()
-        result = pywrk.build_results_dict(stats, 10.0, 50)
+        result = pywrkr.build_results_dict(stats, 10.0, 50)
         self.assertNotIn("tags", result)
 
     def test_tags_cli_parsing(self):
@@ -2750,7 +2750,7 @@ class TestMetadataTags(unittest.TestCase):
 
     def test_config_tags_default_empty(self):
         """BenchmarkConfig should have empty tags by default."""
-        cfg = pywrk.BenchmarkConfig(url="http://test/")
+        cfg = pywrkr.BenchmarkConfig(url="http://test/")
         self.assertEqual(cfg.tags, {})
         self.assertIsNone(cfg.otel_endpoint)
         self.assertIsNone(cfg.prom_remote_write)
@@ -2792,25 +2792,25 @@ class TestOtelExport(unittest.TestCase):
 
     def test_graceful_when_otel_not_installed(self):
         """Should warn gracefully when OTel packages are missing."""
-        original = pywrk_main.OTEL_AVAILABLE
+        original = pywrkr_main.OTEL_AVAILABLE
         try:
-            pywrk_main.OTEL_AVAILABLE = False
+            pywrkr_main.OTEL_AVAILABLE = False
             buf = StringIO()
             with patch("sys.stdout", buf):
-                pywrk.export_to_otel(self._make_results(), "http://localhost:4318", {})
+                pywrkr.export_to_otel(self._make_results(), "http://localhost:4318", {})
             self.assertIn("opentelemetry packages not installed", buf.getvalue())
         finally:
-            pywrk_main.OTEL_AVAILABLE = original
+            pywrkr_main.OTEL_AVAILABLE = original
 
-    @unittest.skipUnless(pywrk_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_export_constructs_metrics(self):
         """Test that export_to_otel creates a MeterProvider and metrics."""
         results = self._make_results()
         tags = {"environment": "test", "service": "myapp"}
 
-        with patch("pywrk.main.OTLPMetricExporter") as mock_exporter, \
-             patch("pywrk.main.PeriodicExportingMetricReader") as mock_reader, \
-             patch("pywrk.main.MeterProvider") as mock_provider_cls:
+        with patch("pywrkr.main.OTLPMetricExporter") as mock_exporter, \
+             patch("pywrkr.main.PeriodicExportingMetricReader") as mock_reader, \
+             patch("pywrkr.main.MeterProvider") as mock_provider_cls:
             mock_provider = MagicMock()
             mock_meter = MagicMock()
             mock_provider.get_meter.return_value = mock_meter
@@ -2821,10 +2821,10 @@ class TestOtelExport(unittest.TestCase):
             mock_meter.create_counter.return_value = mock_counter
             mock_meter.create_up_down_counter.return_value = mock_gauge
 
-            pywrk.export_to_otel(results, "http://localhost:4318", tags)
+            pywrkr.export_to_otel(results, "http://localhost:4318", tags)
 
             mock_exporter.assert_called_once_with(endpoint="http://localhost:4318")
-            mock_provider.get_meter.assert_called_once_with("pywrk")
+            mock_provider.get_meter.assert_called_once_with("pywrkr")
             # Should create 2 counters (requests.total, errors.total)
             self.assertEqual(mock_meter.create_counter.call_count, 2)
             # Should create several gauges
@@ -2836,15 +2836,15 @@ class TestOtelExport(unittest.TestCase):
             mock_provider.force_flush.assert_called_once()
             mock_provider.shutdown.assert_called_once()
 
-    @unittest.skipUnless(pywrk_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_tags_attached_as_attributes(self):
         """Tags should be passed as metric attributes."""
         results = self._make_results()
         tags = {"env": "prod", "region": "us-east-1"}
 
-        with patch("pywrk.main.OTLPMetricExporter"), \
-             patch("pywrk.main.PeriodicExportingMetricReader"), \
-             patch("pywrk.main.MeterProvider") as mock_provider_cls:
+        with patch("pywrkr.main.OTLPMetricExporter"), \
+             patch("pywrkr.main.PeriodicExportingMetricReader"), \
+             patch("pywrkr.main.MeterProvider") as mock_provider_cls:
             mock_provider = MagicMock()
             mock_meter = MagicMock()
             mock_provider.get_meter.return_value = mock_meter
@@ -2855,7 +2855,7 @@ class TestOtelExport(unittest.TestCase):
             mock_meter.create_counter.return_value = mock_counter
             mock_meter.create_up_down_counter.return_value = mock_gauge
 
-            pywrk.export_to_otel(results, "http://localhost:4318", tags)
+            pywrkr.export_to_otel(results, "http://localhost:4318", tags)
 
             # Check that counter add was called with tags as attributes
             for call in mock_counter.add.call_args_list:
@@ -2863,13 +2863,13 @@ class TestOtelExport(unittest.TestCase):
             for call in mock_gauge.add.call_args_list:
                 self.assertEqual(call[1]["attributes"], tags)
 
-    @unittest.skipUnless(pywrk_main.OTEL_AVAILABLE, "opentelemetry not installed")
+    @unittest.skipUnless(pywrkr_main.OTEL_AVAILABLE, "opentelemetry not installed")
     def test_graceful_on_connection_error(self):
         """Should not crash on connection errors."""
-        with patch("pywrk.main.OTLPMetricExporter", side_effect=Exception("connection refused")):
+        with patch("pywrkr.main.OTLPMetricExporter", side_effect=Exception("connection refused")):
             buf = StringIO()
             with patch("sys.stdout", buf):
-                pywrk.export_to_otel(self._make_results(), "http://bad:4318", {})
+                pywrkr.export_to_otel(self._make_results(), "http://bad:4318", {})
             self.assertIn("Warning: failed to export", buf.getvalue())
 
 
@@ -2913,41 +2913,41 @@ class TestPrometheusExport(unittest.TestCase):
         tags = {"env": "prod"}
 
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(results, "http://pushgateway:9091", tags)
+            pywrkr.export_to_prometheus(results, "http://pushgateway:9091", tags)
 
             mock_urlopen.assert_called_once()
             req = mock_urlopen.call_args[0][0]
             body = req.data.decode("utf-8")
 
             # Check metric names present
-            self.assertIn("pywrk_requests_total", body)
-            self.assertIn("pywrk_errors_total", body)
-            self.assertIn("pywrk_requests_per_sec", body)
-            self.assertIn("pywrk_latency_p50_ms", body)
-            self.assertIn("pywrk_latency_p95_ms", body)
-            self.assertIn("pywrk_latency_p99_ms", body)
-            self.assertIn("pywrk_latency_mean_ms", body)
-            self.assertIn("pywrk_latency_max_ms", body)
-            self.assertIn("pywrk_transfer_bytes_per_sec", body)
-            self.assertIn("pywrk_duration_sec", body)
+            self.assertIn("pywrkr_requests_total", body)
+            self.assertIn("pywrkr_errors_total", body)
+            self.assertIn("pywrkr_requests_per_sec", body)
+            self.assertIn("pywrkr_latency_p50_ms", body)
+            self.assertIn("pywrkr_latency_p95_ms", body)
+            self.assertIn("pywrkr_latency_p99_ms", body)
+            self.assertIn("pywrkr_latency_mean_ms", body)
+            self.assertIn("pywrkr_latency_max_ms", body)
+            self.assertIn("pywrkr_transfer_bytes_per_sec", body)
+            self.assertIn("pywrkr_duration_sec", body)
 
             # Check HELP and TYPE lines
-            self.assertIn("# HELP pywrk_requests_total", body)
-            self.assertIn("# TYPE pywrk_requests_total counter", body)
-            self.assertIn("# TYPE pywrk_requests_per_sec gauge", body)
+            self.assertIn("# HELP pywrkr_requests_total", body)
+            self.assertIn("# TYPE pywrkr_requests_total counter", body)
+            self.assertIn("# TYPE pywrkr_requests_per_sec gauge", body)
 
             # Check values
             self.assertIn("1000", body)  # total_requests
             self.assertIn("5", body)  # total_errors
 
     def test_post_to_correct_url(self):
-        """Should POST to {endpoint}/metrics/job/pywrk."""
+        """Should POST to {endpoint}/metrics/job/pywrkr."""
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(
+            pywrkr.export_to_prometheus(
                 self._make_results(), "http://pushgateway:9091", {},
             )
             req = mock_urlopen.call_args[0][0]
-            self.assertEqual(req.full_url, "http://pushgateway:9091/metrics/job/pywrk")
+            self.assertEqual(req.full_url, "http://pushgateway:9091/metrics/job/pywrkr")
             self.assertEqual(req.method, "POST")
             self.assertEqual(req.get_header("Content-type"),
                              "text/plain; version=0.0.4")
@@ -2955,18 +2955,18 @@ class TestPrometheusExport(unittest.TestCase):
     def test_trailing_slash_in_endpoint(self):
         """Should handle trailing slash in endpoint URL."""
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(
+            pywrkr.export_to_prometheus(
                 self._make_results(), "http://pushgateway:9091/", {},
             )
             req = mock_urlopen.call_args[0][0]
-            self.assertEqual(req.full_url, "http://pushgateway:9091/metrics/job/pywrk")
+            self.assertEqual(req.full_url, "http://pushgateway:9091/metrics/job/pywrkr")
 
     def test_tags_become_labels(self):
         """Tags should appear as Prometheus labels."""
         tags = {"environment": "staging", "build": "42"}
 
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(self._make_results(), "http://gw:9091", tags)
+            pywrkr.export_to_prometheus(self._make_results(), "http://gw:9091", tags)
 
             req = mock_urlopen.call_args[0][0]
             body = req.data.decode("utf-8")
@@ -2978,7 +2978,7 @@ class TestPrometheusExport(unittest.TestCase):
     def test_empty_tags_no_labels(self):
         """With no tags, metrics should have no label braces."""
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(self._make_results(), "http://gw:9091", {})
+            pywrkr.export_to_prometheus(self._make_results(), "http://gw:9091", {})
 
             req = mock_urlopen.call_args[0][0]
             body = req.data.decode("utf-8")
@@ -2995,7 +2995,7 @@ class TestPrometheusExport(unittest.TestCase):
                    side_effect=urllib.error.URLError("connection refused")):
             buf = StringIO()
             with patch("sys.stdout", buf):
-                pywrk.export_to_prometheus(
+                pywrkr.export_to_prometheus(
                     self._make_results(), "http://bad:9091", {},
                 )
             self.assertIn("Warning: failed to export", buf.getvalue())
@@ -3004,15 +3004,15 @@ class TestPrometheusExport(unittest.TestCase):
         """Latency values should be exported in milliseconds."""
         results = self._make_results()
         with patch("urllib.request.urlopen") as mock_urlopen:
-            pywrk.export_to_prometheus(results, "http://gw:9091", {})
+            pywrkr.export_to_prometheus(results, "http://gw:9091", {})
             req = mock_urlopen.call_args[0][0]
             body = req.data.decode("utf-8")
             # p50 = 0.04s = 40ms
-            self.assertIn("pywrk_latency_p50_ms 40.0", body)
+            self.assertIn("pywrkr_latency_p50_ms 40.0", body)
             # p95 = 0.2s = 200ms
-            self.assertIn("pywrk_latency_p95_ms 200.0", body)
+            self.assertIn("pywrkr_latency_p95_ms 200.0", body)
             # mean = 0.05s = 50ms
-            self.assertIn("pywrk_latency_mean_ms 50.0", body)
+            self.assertIn("pywrkr_latency_mean_ms 50.0", body)
 
 
 # ---------------------------------------------------------------------------
@@ -3039,7 +3039,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 connections=1,
                 duration=None,
@@ -3050,7 +3050,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
                 tags={"environment": "ci", "test_name": "basic"},
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_benchmark(config)
+                stats, _ = await pywrkr.run_benchmark(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("tags", data)
@@ -3065,7 +3065,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             json_path = f.name
         try:
-            config = pywrk.BenchmarkConfig(
+            config = pywrkr.BenchmarkConfig(
                 url=self._url(),
                 users=3,
                 duration=1.0,
@@ -3076,7 +3076,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
                 tags={"region": "us-west-2"},
             )
             with patch("sys.stdout", new_callable=StringIO):
-                stats, _ = await pywrk.run_user_simulation(config)
+                stats, _ = await pywrkr.run_user_simulation(config)
             with open(json_path) as f:
                 data = json.load(f)
             self.assertIn("tags", data)
@@ -3087,7 +3087,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_otel_exporter_called_when_configured(self):
         """OTel exporter should be called when --otel-endpoint is set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=None,
@@ -3097,9 +3097,9 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             otel_endpoint="http://localhost:4318",
             tags={"env": "test"},
         )
-        with patch("pywrk.main.export_to_otel") as mock_otel, \
+        with patch("pywrkr.main.export_to_otel") as mock_otel, \
              patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_called_once()
         call_args = mock_otel.call_args
         self.assertEqual(call_args[0][1], "http://localhost:4318")
@@ -3110,7 +3110,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_prometheus_exporter_called_when_configured(self):
         """Prometheus exporter should be called when --prom-remote-write is set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=None,
@@ -3120,9 +3120,9 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             prom_remote_write="http://pushgateway:9091",
             tags={"service": "myapp"},
         )
-        with patch("pywrk.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.main.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         mock_prom.assert_called_once()
         call_args = mock_prom.call_args
         self.assertEqual(call_args[0][1], "http://pushgateway:9091")
@@ -3131,7 +3131,7 @@ class TestObservabilityIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_both_exporters_called_together(self):
         """Both exporters should be called when both endpoints are configured."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=None,
@@ -3141,17 +3141,17 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             otel_endpoint="http://otel:4318",
             prom_remote_write="http://prom:9091",
         )
-        with patch("pywrk.main.export_to_otel") as mock_otel, \
-             patch("pywrk.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.main.export_to_otel") as mock_otel, \
+             patch("pywrkr.main.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_called_once()
         mock_prom.assert_called_once()
 
     @unittest_run_loop
     async def test_no_exporters_called_when_not_configured(self):
         """No exporters should be called when endpoints are not set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             connections=1,
             duration=None,
@@ -3159,17 +3159,17 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             threads=1,
             timeout_sec=5,
         )
-        with patch("pywrk.main.export_to_otel") as mock_otel, \
-             patch("pywrk.main.export_to_prometheus") as mock_prom, \
+        with patch("pywrkr.main.export_to_otel") as mock_otel, \
+             patch("pywrkr.main.export_to_prometheus") as mock_prom, \
              patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_benchmark(config)
+            stats, _ = await pywrkr.run_benchmark(config)
         mock_otel.assert_not_called()
         mock_prom.assert_not_called()
 
     @unittest_run_loop
     async def test_user_sim_otel_exporter_called(self):
         """OTel exporter should also work in user simulation mode."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url(),
             users=2,
             duration=1.0,
@@ -3178,9 +3178,9 @@ class TestObservabilityIntegration(AioHTTPTestCase):
             timeout_sec=5,
             otel_endpoint="http://localhost:4318",
         )
-        with patch("pywrk.main.export_to_otel") as mock_otel, \
+        with patch("pywrkr.main.export_to_otel") as mock_otel, \
              patch("sys.stdout", new_callable=StringIO):
-            stats, _ = await pywrk.run_user_simulation(config)
+            stats, _ = await pywrkr.run_user_simulation(config)
         mock_otel.assert_called_once()
 
 
@@ -3209,92 +3209,92 @@ class TestPackagingObservability(unittest.TestCase):
 
 class TestThresholdParsing(unittest.TestCase):
     def test_p95_milliseconds(self):
-        th = pywrk.parse_threshold("p95 < 300ms")
+        th = pywrkr.parse_threshold("p95 < 300ms")
         self.assertEqual(th.metric, "p95")
         self.assertEqual(th.operator, "<")
         self.assertAlmostEqual(th.value, 0.3)
         self.assertEqual(th.raw_expr, "p95 < 300ms")
 
     def test_p99_seconds(self):
-        th = pywrk.parse_threshold("p99 < 1s")
+        th = pywrkr.parse_threshold("p99 < 1s")
         self.assertEqual(th.metric, "p99")
         self.assertEqual(th.operator, "<")
         self.assertAlmostEqual(th.value, 1.0)
 
     def test_error_rate_percent(self):
-        th = pywrk.parse_threshold("error_rate < 1%")
+        th = pywrkr.parse_threshold("error_rate < 1%")
         self.assertEqual(th.metric, "error_rate")
         self.assertEqual(th.operator, "<")
         self.assertAlmostEqual(th.value, 1.0)
 
     def test_error_rate_no_percent(self):
-        th = pywrk.parse_threshold("error_rate < 1")
+        th = pywrkr.parse_threshold("error_rate < 1")
         self.assertEqual(th.metric, "error_rate")
         self.assertEqual(th.operator, "<")
         self.assertAlmostEqual(th.value, 1.0)
 
     def test_rps_greater(self):
-        th = pywrk.parse_threshold("rps > 100")
+        th = pywrkr.parse_threshold("rps > 100")
         self.assertEqual(th.metric, "rps")
         self.assertEqual(th.operator, ">")
         self.assertAlmostEqual(th.value, 100.0)
 
     def test_avg_latency_lte(self):
-        th = pywrk.parse_threshold("avg_latency <= 500ms")
+        th = pywrkr.parse_threshold("avg_latency <= 500ms")
         self.assertEqual(th.metric, "avg_latency")
         self.assertEqual(th.operator, "<=")
         self.assertAlmostEqual(th.value, 0.5)
 
     def test_max_latency(self):
-        th = pywrk.parse_threshold("max_latency < 2s")
+        th = pywrkr.parse_threshold("max_latency < 2s")
         self.assertEqual(th.metric, "max_latency")
         self.assertEqual(th.operator, "<")
         self.assertAlmostEqual(th.value, 2.0)
 
     def test_p50_microseconds(self):
-        th = pywrk.parse_threshold("p50 >= 10us")
+        th = pywrkr.parse_threshold("p50 >= 10us")
         self.assertEqual(th.metric, "p50")
         self.assertEqual(th.operator, ">=")
         self.assertAlmostEqual(th.value, 0.00001)
 
     def test_no_unit_defaults_to_seconds(self):
-        th = pywrk.parse_threshold("p90 < 5")
+        th = pywrkr.parse_threshold("p90 < 5")
         self.assertEqual(th.metric, "p90")
         self.assertAlmostEqual(th.value, 5.0)
 
     def test_min_latency(self):
-        th = pywrk.parse_threshold("min_latency >= 1ms")
+        th = pywrkr.parse_threshold("min_latency >= 1ms")
         self.assertEqual(th.metric, "min_latency")
         self.assertEqual(th.operator, ">=")
         self.assertAlmostEqual(th.value, 0.001)
 
     def test_invalid_metric(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("p100 < 300ms")
+            pywrkr.parse_threshold("p100 < 300ms")
 
     def test_invalid_operator(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("p95 == 300ms")
+            pywrkr.parse_threshold("p95 == 300ms")
 
     def test_empty_string(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("")
+            pywrkr.parse_threshold("")
 
     def test_garbage(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("hello world")
+            pywrkr.parse_threshold("hello world")
 
     def test_invalid_unit_for_error_rate(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("error_rate < 1ms")
+            pywrkr.parse_threshold("error_rate < 1ms")
 
     def test_invalid_unit_for_rps(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("rps > 100ms")
+            pywrkr.parse_threshold("rps > 100ms")
 
     def test_percent_on_latency_metric(self):
         with self.assertRaises(ValueError):
-            pywrk.parse_threshold("p95 < 5%")
+            pywrkr.parse_threshold("p95 < 5%")
 
 
 # ---------------------------------------------------------------------------
@@ -3303,7 +3303,7 @@ class TestThresholdParsing(unittest.TestCase):
 
 class TestThresholdEvaluation(unittest.TestCase):
     def _make_stats(self, latencies=None, errors=0, total=100):
-        stats = pywrk.WorkerStats()
+        stats = pywrkr.WorkerStats()
         stats.total_requests = total
         stats.errors = errors
         stats.latencies = latencies if latencies is not None else []
@@ -3316,11 +3316,11 @@ class TestThresholdEvaluation(unittest.TestCase):
             total=100,
         )
         thresholds = [
-            pywrk.parse_threshold("p95 < 2s"),
-            pywrk.parse_threshold("error_rate < 1"),
-            pywrk.parse_threshold("rps > 5"),
+            pywrkr.parse_threshold("p95 < 2s"),
+            pywrkr.parse_threshold("error_rate < 1"),
+            pywrkr.parse_threshold("rps > 5"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 10.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertEqual(len(results), 3)
         for th, actual, passed in results:
             self.assertTrue(passed, f"{th.raw_expr} failed: actual={actual}")
@@ -3332,10 +3332,10 @@ class TestThresholdEvaluation(unittest.TestCase):
             total=100,
         )
         thresholds = [
-            pywrk.parse_threshold("p95 < 300ms"),     # FAIL: 500ms > 300ms
-            pywrk.parse_threshold("error_rate < 10"),  # PASS: 5% < 10%
+            pywrkr.parse_threshold("p95 < 300ms"),     # FAIL: 500ms > 300ms
+            pywrkr.parse_threshold("error_rate < 10"),  # PASS: 5% < 10%
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 10.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertEqual(len(results), 2)
         # p95 should fail
         self.assertFalse(results[0][2])
@@ -3345,9 +3345,9 @@ class TestThresholdEvaluation(unittest.TestCase):
     def test_empty_latencies(self):
         stats = self._make_stats(latencies=[], errors=0, total=0)
         thresholds = [
-            pywrk.parse_threshold("p95 < 300ms"),
+            pywrkr.parse_threshold("p95 < 300ms"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 10.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertEqual(len(results), 1)
         # With 0.0 as actual, 0.0 < 0.3 should pass
         self.assertTrue(results[0][2])
@@ -3356,68 +3356,68 @@ class TestThresholdEvaluation(unittest.TestCase):
     def test_error_rate_evaluation(self):
         stats = self._make_stats(errors=10, total=100)
         thresholds = [
-            pywrk.parse_threshold("error_rate < 5"),
+            pywrkr.parse_threshold("error_rate < 5"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 10.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertFalse(results[0][2])
         self.assertAlmostEqual(results[0][1], 10.0)
 
     def test_rps_evaluation(self):
         stats = self._make_stats(total=500)
         thresholds = [
-            pywrk.parse_threshold("rps > 100"),
+            pywrkr.parse_threshold("rps > 100"),
         ]
         # 500 requests / 10s = 50 rps < 100 -> FAIL
-        results = pywrk.evaluate_thresholds(thresholds, stats, 10.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertFalse(results[0][2])
         self.assertAlmostEqual(results[0][1], 50.0)
 
         # 500 requests / 2s = 250 rps > 100 -> PASS
-        results = pywrk.evaluate_thresholds(thresholds, stats, 2.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 2.0)
         self.assertTrue(results[0][2])
         self.assertAlmostEqual(results[0][1], 250.0)
 
     def test_avg_latency(self):
         stats = self._make_stats(latencies=[0.1, 0.2, 0.3])
         thresholds = [
-            pywrk.parse_threshold("avg_latency <= 200ms"),
+            pywrkr.parse_threshold("avg_latency <= 200ms"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 1.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
         self.assertAlmostEqual(results[0][1], 0.2)
 
     def test_max_latency(self):
         stats = self._make_stats(latencies=[0.1, 0.2, 0.5])
         thresholds = [
-            pywrk.parse_threshold("max_latency < 1s"),
+            pywrkr.parse_threshold("max_latency < 1s"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 1.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
         self.assertAlmostEqual(results[0][1], 0.5)
 
     def test_min_latency(self):
         stats = self._make_stats(latencies=[0.1, 0.2, 0.5])
         thresholds = [
-            pywrk.parse_threshold("min_latency >= 50ms"),
+            pywrkr.parse_threshold("min_latency >= 50ms"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 1.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
         self.assertAlmostEqual(results[0][1], 0.1)
 
     def test_lte_operator(self):
         stats = self._make_stats(latencies=[0.5] * 10)
         thresholds = [
-            pywrk.parse_threshold("p50 <= 500ms"),
+            pywrkr.parse_threshold("p50 <= 500ms"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 1.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
 
     def test_gte_operator(self):
         stats = self._make_stats(latencies=[0.5] * 10)
         thresholds = [
-            pywrk.parse_threshold("p50 >= 500ms"),
+            pywrkr.parse_threshold("p50 >= 500ms"),
         ]
-        results = pywrk.evaluate_thresholds(thresholds, stats, 1.0)
+        results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
 
 
@@ -3427,10 +3427,10 @@ class TestThresholdEvaluation(unittest.TestCase):
 
 class TestThresholdPrinting(unittest.TestCase):
     def test_print_pass(self):
-        th = pywrk.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
+        th = pywrkr.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
         results = [(th, 0.2, True)]
         buf = StringIO()
-        pywrk.print_threshold_results(results, file=buf)
+        pywrkr.print_threshold_results(results, file=buf)
         output = buf.getvalue()
         self.assertIn("SLO Threshold Results", output)
         self.assertIn("PASS", output)
@@ -3438,20 +3438,20 @@ class TestThresholdPrinting(unittest.TestCase):
         self.assertIn("ALL PASSED", output)
 
     def test_print_fail(self):
-        th = pywrk.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
+        th = pywrkr.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
         results = [(th, 0.5, False)]
         buf = StringIO()
-        pywrk.print_threshold_results(results, file=buf)
+        pywrkr.print_threshold_results(results, file=buf)
         output = buf.getvalue()
         self.assertIn("FAIL", output)
         self.assertIn("SOME FAILED", output)
 
     def test_print_mixed(self):
-        th1 = pywrk.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
-        th2 = pywrk.Threshold(metric="error_rate", operator="<", value=5.0, raw_expr="error_rate < 5%")
+        th1 = pywrkr.Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")
+        th2 = pywrkr.Threshold(metric="error_rate", operator="<", value=5.0, raw_expr="error_rate < 5%")
         results = [(th1, 0.5, False), (th2, 2.0, True)]
         buf = StringIO()
-        pywrk.print_threshold_results(results, file=buf)
+        pywrkr.print_threshold_results(results, file=buf)
         output = buf.getvalue()
         self.assertIn("FAIL", output)
         self.assertIn("PASS", output)
@@ -3459,22 +3459,22 @@ class TestThresholdPrinting(unittest.TestCase):
 
     def test_print_empty(self):
         buf = StringIO()
-        pywrk.print_threshold_results([], file=buf)
+        pywrkr.print_threshold_results([], file=buf)
         self.assertEqual(buf.getvalue(), "")
 
     def test_print_rps_format(self):
-        th = pywrk.Threshold(metric="rps", operator=">", value=100.0, raw_expr="rps > 100")
+        th = pywrkr.Threshold(metric="rps", operator=">", value=100.0, raw_expr="rps > 100")
         results = [(th, 150.5, True)]
         buf = StringIO()
-        pywrk.print_threshold_results(results, file=buf)
+        pywrkr.print_threshold_results(results, file=buf)
         output = buf.getvalue()
         self.assertIn("150.50", output)
 
     def test_print_error_rate_format(self):
-        th = pywrk.Threshold(metric="error_rate", operator="<", value=5.0, raw_expr="error_rate < 5%")
+        th = pywrkr.Threshold(metric="error_rate", operator="<", value=5.0, raw_expr="error_rate < 5%")
         results = [(th, 2.5, True)]
         buf = StringIO()
-        pywrk.print_threshold_results(results, file=buf)
+        pywrkr.print_threshold_results(results, file=buf)
         output = buf.getvalue()
         self.assertIn("2.50%", output)
 
@@ -3504,7 +3504,7 @@ class TestThresholdIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_benchmark_thresholds_all_pass(self):
         """All thresholds pass -> exit_code 0."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             duration=None,
@@ -3512,19 +3512,19 @@ class TestThresholdIntegration(AioHTTPTestCase):
             threads=1,
             timeout_sec=5,
             thresholds=[
-                pywrk.parse_threshold("p95 < 5s"),
-                pywrk.parse_threshold("error_rate < 50"),
+                pywrkr.parse_threshold("p95 < 5s"),
+                pywrkr.parse_threshold("error_rate < 50"),
             ],
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, exit_code = await pywrk.run_benchmark(config)
+            stats, exit_code = await pywrkr.run_benchmark(config)
         self.assertEqual(exit_code, 0)
         self.assertGreater(stats.total_requests, 0)
 
     @unittest_run_loop
     async def test_benchmark_thresholds_fail(self):
         """Error endpoint breaches error_rate threshold -> exit_code 2."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/error"),
             connections=1,
             duration=None,
@@ -3532,17 +3532,17 @@ class TestThresholdIntegration(AioHTTPTestCase):
             threads=1,
             timeout_sec=5,
             thresholds=[
-                pywrk.parse_threshold("error_rate < 1"),
+                pywrkr.parse_threshold("error_rate < 1"),
             ],
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, exit_code = await pywrk.run_benchmark(config)
+            stats, exit_code = await pywrkr.run_benchmark(config)
         self.assertEqual(exit_code, 2)
 
     @unittest_run_loop
     async def test_benchmark_no_thresholds(self):
         """No thresholds -> exit_code 0."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             duration=None,
@@ -3551,13 +3551,13 @@ class TestThresholdIntegration(AioHTTPTestCase):
             timeout_sec=5,
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, exit_code = await pywrk.run_benchmark(config)
+            stats, exit_code = await pywrkr.run_benchmark(config)
         self.assertEqual(exit_code, 0)
 
     @unittest_run_loop
     async def test_user_simulation_thresholds_pass(self):
         """User simulation with passing thresholds."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=3,
             duration=1.0,
@@ -3565,18 +3565,18 @@ class TestThresholdIntegration(AioHTTPTestCase):
             ramp_up=0.0,
             timeout_sec=5,
             thresholds=[
-                pywrk.parse_threshold("p95 < 5s"),
-                pywrk.parse_threshold("error_rate < 1"),
+                pywrkr.parse_threshold("p95 < 5s"),
+                pywrkr.parse_threshold("error_rate < 1"),
             ],
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, exit_code = await pywrk.run_user_simulation(config)
+            stats, exit_code = await pywrkr.run_user_simulation(config)
         self.assertEqual(exit_code, 0)
 
     @unittest_run_loop
     async def test_user_simulation_thresholds_fail(self):
         """User simulation with failing thresholds."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/error"),
             users=3,
             duration=1.0,
@@ -3584,17 +3584,17 @@ class TestThresholdIntegration(AioHTTPTestCase):
             ramp_up=0.0,
             timeout_sec=5,
             thresholds=[
-                pywrk.parse_threshold("error_rate < 1"),
+                pywrkr.parse_threshold("error_rate < 1"),
             ],
         )
         with patch("sys.stdout", new_callable=StringIO):
-            stats, exit_code = await pywrk.run_user_simulation(config)
+            stats, exit_code = await pywrkr.run_user_simulation(config)
         self.assertEqual(exit_code, 2)
 
     @unittest_run_loop
     async def test_threshold_results_printed(self):
         """Threshold results should appear in output."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=1,
             duration=None,
@@ -3602,12 +3602,12 @@ class TestThresholdIntegration(AioHTTPTestCase):
             threads=1,
             timeout_sec=5,
             thresholds=[
-                pywrk.parse_threshold("p95 < 5s"),
+                pywrkr.parse_threshold("p95 < 5s"),
             ],
         )
         buf = StringIO()
         with patch("sys.stdout", buf):
-            stats, exit_code = await pywrk.run_benchmark(config)
+            stats, exit_code = await pywrkr.run_benchmark(config)
         output = buf.getvalue()
         self.assertIn("SLO Threshold Results", output)
         self.assertIn("PASS", output)
@@ -3621,7 +3621,7 @@ class TestSerializeConfig(unittest.TestCase):
     """Test config serialization/deserialization round-trip."""
 
     def test_basic_round_trip(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://example.com/test",
             connections=50,
             duration=30.0,
@@ -3636,8 +3636,8 @@ class TestSerializeConfig(unittest.TestCase):
             rate=100.0,
             rate_ramp=500.0,
         )
-        data = pywrk._serialize_config(config)
-        restored = pywrk._deserialize_config(data)
+        data = pywrkr._serialize_config(config)
+        restored = pywrkr._deserialize_config(data)
 
         self.assertEqual(restored.url, config.url)
         self.assertEqual(restored.connections, config.connections)
@@ -3654,21 +3654,21 @@ class TestSerializeConfig(unittest.TestCase):
         self.assertEqual(restored.rate_ramp, config.rate_ramp)
 
     def test_none_body(self):
-        config = pywrk.BenchmarkConfig(url="http://example.com/", body=None)
-        data = pywrk._serialize_config(config)
-        restored = pywrk._deserialize_config(data)
+        config = pywrkr.BenchmarkConfig(url="http://example.com/", body=None)
+        data = pywrkr._serialize_config(config)
+        restored = pywrkr._deserialize_config(data)
         self.assertIsNone(restored.body)
 
     def test_user_simulation_fields(self):
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url="http://example.com/",
             users=100,
             ramp_up=10.0,
             think_time=2.0,
             think_time_jitter=0.3,
         )
-        data = pywrk._serialize_config(config)
-        restored = pywrk._deserialize_config(data)
+        data = pywrkr._serialize_config(config)
+        restored = pywrkr._deserialize_config(data)
         self.assertEqual(restored.users, 100)
         self.assertEqual(restored.ramp_up, 10.0)
         self.assertEqual(restored.think_time, 2.0)
@@ -3679,7 +3679,7 @@ class TestSerializeStats(unittest.TestCase):
     """Test stats serialization/deserialization round-trip."""
 
     def test_round_trip(self):
-        ws = pywrk.WorkerStats()
+        ws = pywrkr.WorkerStats()
         ws.total_requests = 1000
         ws.total_bytes = 50000
         ws.errors = 5
@@ -3691,8 +3691,8 @@ class TestSerializeStats(unittest.TestCase):
         ws.status_codes[500] = 5
         ws.rps_timeline = [(1.0, 100), (2.0, 150)]
 
-        data = pywrk._serialize_stats(ws)
-        restored = pywrk._deserialize_stats(data)
+        data = pywrkr._serialize_stats(ws)
+        restored = pywrkr._deserialize_stats(data)
 
         self.assertEqual(restored.total_requests, ws.total_requests)
         self.assertEqual(restored.total_bytes, ws.total_bytes)
@@ -3704,9 +3704,9 @@ class TestSerializeStats(unittest.TestCase):
         self.assertEqual(len(restored.rps_timeline), len(ws.rps_timeline))
 
     def test_empty_stats(self):
-        ws = pywrk.WorkerStats()
-        data = pywrk._serialize_stats(ws)
-        restored = pywrk._deserialize_stats(data)
+        ws = pywrkr.WorkerStats()
+        data = pywrkr._serialize_stats(ws)
+        restored = pywrkr._deserialize_stats(data)
         self.assertEqual(restored.total_requests, 0)
         self.assertEqual(restored.latencies, [])
 
@@ -3715,7 +3715,7 @@ class TestMergeWorkerStats(unittest.TestCase):
     """Test merge_worker_stats helper."""
 
     def test_merge_two(self):
-        ws1 = pywrk.WorkerStats()
+        ws1 = pywrkr.WorkerStats()
         ws1.total_requests = 100
         ws1.total_bytes = 5000
         ws1.errors = 2
@@ -3723,7 +3723,7 @@ class TestMergeWorkerStats(unittest.TestCase):
         ws1.status_codes[200] = 98
         ws1.status_codes[500] = 2
 
-        ws2 = pywrk.WorkerStats()
+        ws2 = pywrkr.WorkerStats()
         ws2.total_requests = 200
         ws2.total_bytes = 10000
         ws2.errors = 3
@@ -3731,7 +3731,7 @@ class TestMergeWorkerStats(unittest.TestCase):
         ws2.status_codes[200] = 197
         ws2.status_codes[500] = 3
 
-        merged = pywrk.merge_worker_stats([ws1, ws2])
+        merged = pywrkr.merge_worker_stats([ws1, ws2])
         self.assertEqual(merged.total_requests, 300)
         self.assertEqual(merged.total_bytes, 15000)
         self.assertEqual(merged.errors, 5)
@@ -3740,7 +3740,7 @@ class TestMergeWorkerStats(unittest.TestCase):
         self.assertEqual(merged.status_codes[500], 5)
 
     def test_merge_empty_list(self):
-        merged = pywrk.merge_worker_stats([])
+        merged = pywrkr.merge_worker_stats([])
         self.assertEqual(merged.total_requests, 0)
 
 
@@ -3757,7 +3757,7 @@ class TestMessageProtocol(unittest.TestCase):
             ready = asyncio.Event()
 
             async def handler(reader, writer):
-                msg = await pywrk._recv_msg(reader)
+                msg = await pywrkr._recv_msg(reader)
                 received.update(msg)
                 writer.close()
                 ready.set()
@@ -3766,7 +3766,7 @@ class TestMessageProtocol(unittest.TestCase):
             port = server.sockets[0].getsockname()[1]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            await pywrk._send_msg(writer, original)
+            await pywrkr._send_msg(writer, original)
             writer.close()
 
             await asyncio.wait_for(ready.wait(), timeout=5)
@@ -3787,7 +3787,7 @@ class TestMessageProtocol(unittest.TestCase):
             ready = asyncio.Event()
 
             async def handler(reader, writer):
-                msg = await pywrk._recv_msg(reader)
+                msg = await pywrkr._recv_msg(reader)
                 received.update(msg)
                 writer.close()
                 ready.set()
@@ -3796,7 +3796,7 @@ class TestMessageProtocol(unittest.TestCase):
             port = server.sockets[0].getsockname()[1]
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            await pywrk._send_msg(writer, original)
+            await pywrkr._send_msg(writer, original)
             writer.close()
 
             await asyncio.wait_for(ready.wait(), timeout=5)
@@ -3831,7 +3831,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_master_worker_single(self):
         """A single worker should connect, run benchmark, and return results to master."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=None,
@@ -3845,7 +3845,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
 
         async def _master():
             nonlocal master_result
-            master_result = await pywrk.run_master(config, "127.0.0.1", 0, expect_workers=1)
+            master_result = await pywrkr.run_master(config, "127.0.0.1", 0, expect_workers=1)
 
         # Start master on a random port, discover the port, then start worker
         worker_connections = []
@@ -3863,12 +3863,12 @@ class TestDistributedIntegration(AioHTTPTestCase):
         # Run master and worker concurrently using the discovered port
         async def _run_master():
             nonlocal master_result
-            master_result = await pywrk.run_master(config, "127.0.0.1", port, expect_workers=1)
+            master_result = await pywrkr.run_master(config, "127.0.0.1", port, expect_workers=1)
 
         async def _run_worker():
             # Small delay to let master start listening
             await asyncio.sleep(0.3)
-            await pywrk.run_worker_node("127.0.0.1", port)
+            await pywrkr.run_worker_node("127.0.0.1", port)
 
         buf = StringIO()
         with patch("sys.stdout", buf):
@@ -3883,7 +3883,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_master_worker_multiple(self):
         """Multiple workers should all contribute stats to the master."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             connections=2,
             duration=None,
@@ -3903,11 +3903,11 @@ class TestDistributedIntegration(AioHTTPTestCase):
 
         async def _run_master():
             nonlocal master_result
-            master_result = await pywrk.run_master(config, "127.0.0.1", port, expect_workers=2)
+            master_result = await pywrkr.run_master(config, "127.0.0.1", port, expect_workers=2)
 
         async def _run_worker(delay):
             await asyncio.sleep(delay)
-            await pywrk.run_worker_node("127.0.0.1", port)
+            await pywrkr.run_worker_node("127.0.0.1", port)
 
         buf = StringIO()
         with patch("sys.stdout", buf):
@@ -3926,7 +3926,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
     @unittest_run_loop
     async def test_master_worker_user_simulation(self):
         """Worker should handle user simulation mode when config has users set."""
-        config = pywrk.BenchmarkConfig(
+        config = pywrkr.BenchmarkConfig(
             url=self._url("/"),
             users=3,
             duration=2.0,
@@ -3945,11 +3945,11 @@ class TestDistributedIntegration(AioHTTPTestCase):
 
         async def _run_master():
             nonlocal master_result
-            master_result = await pywrk.run_master(config, "127.0.0.1", port, expect_workers=1)
+            master_result = await pywrkr.run_master(config, "127.0.0.1", port, expect_workers=1)
 
         async def _run_worker():
             await asyncio.sleep(0.3)
-            await pywrk.run_worker_node("127.0.0.1", port)
+            await pywrkr.run_worker_node("127.0.0.1", port)
 
         buf = StringIO()
         with patch("sys.stdout", buf):
@@ -3966,7 +3966,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
 
         async def handler(reader, writer):
             connected.set()
-            await pywrk._send_msg(writer, {"type": "unknown"})
+            await pywrkr._send_msg(writer, {"type": "unknown"})
             await asyncio.sleep(0.5)
             writer.close()
 
@@ -3976,7 +3976,7 @@ class TestDistributedIntegration(AioHTTPTestCase):
         buf = StringIO()
         try:
             with patch("sys.stdout", buf):
-                await pywrk.run_worker_node("127.0.0.1", port)
+                await pywrkr.run_worker_node("127.0.0.1", port)
         finally:
             server.close()
             await server.wait_closed()
@@ -3990,25 +3990,25 @@ class TestDistributedCLIArgs(unittest.TestCase):
 
     def test_worker_arg_parsing(self):
         """--worker should be parsed as HOST:PORT."""
-        with patch("sys.argv", ["pywrk", "--worker", "10.0.0.1:9220"]):
-            with patch("pywrk.main.run_worker_node", new_callable=AsyncMock) as mock_run:
+        with patch("sys.argv", ["pywrkr", "--worker", "10.0.0.1:9220"]):
+            with patch("pywrkr.main.run_worker_node", new_callable=AsyncMock) as mock_run:
                 with self.assertRaises(SystemExit) as cm:
-                    pywrk_main.main()
+                    pywrkr_main.main()
                 # Should call run_worker_node with the right args
                 mock_run.assert_called_once_with("10.0.0.1", 9220)
 
     def test_master_requires_expect_workers(self):
         """--master without --expect-workers should error."""
-        with patch("sys.argv", ["pywrk", "--master", "http://example.com/"]):
+        with patch("sys.argv", ["pywrkr", "--master", "http://example.com/"]):
             with self.assertRaises(SystemExit) as cm:
-                pywrk_main.main()
+                pywrkr_main.main()
             self.assertEqual(cm.exception.code, 2)
 
     def test_worker_requires_host_port(self):
         """--worker with bad format should error."""
-        with patch("sys.argv", ["pywrk", "--worker", "no-port"]):
+        with patch("sys.argv", ["pywrkr", "--worker", "no-port"]):
             with self.assertRaises(SystemExit) as cm:
-                pywrk_main.main()
+                pywrkr_main.main()
             self.assertEqual(cm.exception.code, 2)
 
 
@@ -4025,7 +4025,7 @@ class TestLoadUrlFile(unittest.TestCase):
             f.write("http://localhost:8080/health\n")
             f.name
         try:
-            entries = pywrk.load_url_file(f.name)
+            entries = pywrkr.load_url_file(f.name)
             self.assertEqual(len(entries), 2)
             self.assertEqual(entries[0].url, "http://localhost:8080/api")
             self.assertEqual(entries[0].method, "GET")
@@ -4042,7 +4042,7 @@ class TestLoadUrlFile(unittest.TestCase):
             f.write("PATCH http://localhost/patch\n")
             f.name
         try:
-            entries = pywrk.load_url_file(f.name)
+            entries = pywrkr.load_url_file(f.name)
             self.assertEqual(len(entries), 5)
             self.assertEqual(entries[0].method, "GET")
             self.assertEqual(entries[1].method, "POST")
@@ -4063,7 +4063,7 @@ class TestLoadUrlFile(unittest.TestCase):
             f.write("http://localhost/two\n")
             f.name
         try:
-            entries = pywrk.load_url_file(f.name)
+            entries = pywrkr.load_url_file(f.name)
             self.assertEqual(len(entries), 2)
             self.assertEqual(entries[0].url, "http://localhost/one")
             self.assertEqual(entries[1].url, "http://localhost/two")
@@ -4077,14 +4077,14 @@ class TestLoadUrlFile(unittest.TestCase):
             f.name
         try:
             with self.assertRaises(ValueError) as cm:
-                pywrk.load_url_file(f.name)
+                pywrkr.load_url_file(f.name)
             self.assertIn("empty", str(cm.exception))
         finally:
             os.unlink(f.name)
 
     def test_file_not_found(self):
         with self.assertRaises(FileNotFoundError):
-            pywrk.load_url_file("/nonexistent/path/urls.txt")
+            pywrkr.load_url_file("/nonexistent/path/urls.txt")
 
     def test_case_insensitive_method(self):
         """Method keywords should be recognized case-insensitively."""
@@ -4093,7 +4093,7 @@ class TestLoadUrlFile(unittest.TestCase):
             f.write("get http://localhost/health\n")
             f.name
         try:
-            entries = pywrk.load_url_file(f.name)
+            entries = pywrkr.load_url_file(f.name)
             self.assertEqual(len(entries), 2)
             self.assertEqual(entries[0].method, "POST")
             self.assertEqual(entries[0].url, "http://localhost/api")
@@ -4106,22 +4106,22 @@ class TestMultiUrlJson(unittest.TestCase):
     """Test build_multi_url_json."""
 
     def test_basic_structure(self):
-        ws1 = pywrk.WorkerStats()
+        ws1 = pywrkr.WorkerStats()
         ws1.total_requests = 100
         ws1.errors = 2
         ws1.latencies = [0.1, 0.2, 0.3]
 
-        ws2 = pywrk.WorkerStats()
+        ws2 = pywrkr.WorkerStats()
         ws2.total_requests = 200
         ws2.errors = 5
         ws2.latencies = [0.15, 0.25]
 
         results = [
-            pywrk.MultiUrlResult(url="http://a.com/", method="GET", stats=ws1, duration=10.0, exit_code=0),
-            pywrk.MultiUrlResult(url="http://b.com/", method="POST", stats=ws2, duration=10.0, exit_code=0),
+            pywrkr.MultiUrlResult(url="http://a.com/", method="GET", stats=ws1, duration=10.0, exit_code=0),
+            pywrkr.MultiUrlResult(url="http://b.com/", method="POST", stats=ws2, duration=10.0, exit_code=0),
         ]
 
-        data = pywrk.build_multi_url_json(results)
+        data = pywrkr.build_multi_url_json(results)
         self.assertEqual(data["mode"], "multi_url")
         self.assertEqual(data["endpoint_count"], 2)
         self.assertEqual(data["total_requests"], 300)
@@ -4137,14 +4137,14 @@ class TestMultiUrlSummaryPrint(unittest.TestCase):
     """Test print_multi_url_summary output."""
 
     def test_prints_all_urls(self):
-        ws1 = pywrk.WorkerStats()
+        ws1 = pywrkr.WorkerStats()
         ws1.total_requests = 100
         ws1.total_bytes = 5000
         ws1.errors = 0
         ws1.latencies = [0.05, 0.1, 0.15]
         ws1.status_codes[200] = 100
 
-        ws2 = pywrk.WorkerStats()
+        ws2 = pywrkr.WorkerStats()
         ws2.total_requests = 200
         ws2.total_bytes = 10000
         ws2.errors = 3
@@ -4153,13 +4153,13 @@ class TestMultiUrlSummaryPrint(unittest.TestCase):
         ws2.status_codes[500] = 3
 
         results = [
-            pywrk.MultiUrlResult(url="http://a.com/api", method="GET", stats=ws1, duration=10.0, exit_code=0),
-            pywrk.MultiUrlResult(url="http://b.com/data", method="POST", stats=ws2, duration=10.0, exit_code=0),
+            pywrkr.MultiUrlResult(url="http://a.com/api", method="GET", stats=ws1, duration=10.0, exit_code=0),
+            pywrkr.MultiUrlResult(url="http://b.com/data", method="POST", stats=ws2, duration=10.0, exit_code=0),
         ]
 
         buf = StringIO()
         with patch("sys.stdout", buf):
-            pywrk.print_multi_url_summary(results)
+            pywrkr.print_multi_url_summary(results)
         output = buf.getvalue()
 
         self.assertIn("MULTI-URL COMPARISON SUMMARY", output)
@@ -4198,10 +4198,10 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
     async def test_multi_url_basic(self):
         """Run against two endpoints and get combined results."""
         entries = [
-            pywrk.UrlEntry(url=self._url("/"), method="GET"),
-            pywrk.UrlEntry(url=self._url("/api"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/api"), method="GET"),
         ]
-        base_config = pywrk.BenchmarkConfig(
+        base_config = pywrkr.BenchmarkConfig(
             url="",
             connections=2,
             duration=None,
@@ -4212,7 +4212,7 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
 
         buf = StringIO()
         with patch("sys.stdout", buf):
-            results = await pywrk.run_multi_url(entries, base_config)
+            results = await pywrkr.run_multi_url(entries, base_config)
 
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0].url, self._url("/"))
@@ -4228,10 +4228,10 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
     async def test_multi_url_mixed_methods(self):
         """Endpoints with different HTTP methods should work."""
         entries = [
-            pywrk.UrlEntry(url=self._url("/"), method="GET"),
-            pywrk.UrlEntry(url=self._url("/data"), method="POST"),
+            pywrkr.UrlEntry(url=self._url("/"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/data"), method="POST"),
         ]
-        base_config = pywrk.BenchmarkConfig(
+        base_config = pywrkr.BenchmarkConfig(
             url="",
             connections=2,
             duration=None,
@@ -4242,7 +4242,7 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
 
         buf = StringIO()
         with patch("sys.stdout", buf):
-            results = await pywrk.run_multi_url(entries, base_config)
+            results = await pywrkr.run_multi_url(entries, base_config)
 
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0].method, "GET")
@@ -4254,15 +4254,15 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
     async def test_multi_url_json_output(self):
         """JSON output should contain all endpoints."""
         entries = [
-            pywrk.UrlEntry(url=self._url("/"), method="GET"),
-            pywrk.UrlEntry(url=self._url("/api"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/api"), method="GET"),
         ]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json_path = f.name
 
         try:
-            base_config = pywrk.BenchmarkConfig(
+            base_config = pywrkr.BenchmarkConfig(
                 url="",
                 connections=2,
                 duration=None,
@@ -4274,7 +4274,7 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
 
             buf = StringIO()
             with patch("sys.stdout", buf):
-                results = await pywrk.run_multi_url(entries, base_config)
+                results = await pywrkr.run_multi_url(entries, base_config)
 
             with open(json_path) as f:
                 data = json.load(f)
@@ -4290,10 +4290,10 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
     async def test_multi_url_user_simulation(self):
         """Multi-URL mode should support user simulation."""
         entries = [
-            pywrk.UrlEntry(url=self._url("/"), method="GET"),
-            pywrk.UrlEntry(url=self._url("/api"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/"), method="GET"),
+            pywrkr.UrlEntry(url=self._url("/api"), method="GET"),
         ]
-        base_config = pywrk.BenchmarkConfig(
+        base_config = pywrkr.BenchmarkConfig(
             url="",
             users=3,
             duration=2.0,
@@ -4304,7 +4304,7 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
 
         buf = StringIO()
         with patch("sys.stdout", buf):
-            results = await pywrk.run_multi_url(entries, base_config)
+            results = await pywrkr.run_multi_url(entries, base_config)
 
         self.assertEqual(len(results), 2)
         for r in results:
@@ -4320,10 +4320,10 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
             url_file = f.name
 
         try:
-            entries = pywrk.load_url_file(url_file)
+            entries = pywrkr.load_url_file(url_file)
             self.assertEqual(len(entries), 2)
 
-            base_config = pywrk.BenchmarkConfig(
+            base_config = pywrkr.BenchmarkConfig(
                 url="",
                 connections=2,
                 duration=None,
@@ -4334,7 +4334,7 @@ class TestMultiUrlIntegration(AioHTTPTestCase):
 
             buf = StringIO()
             with patch("sys.stdout", buf):
-                results = await pywrk.run_multi_url(entries, base_config)
+                results = await pywrkr.run_multi_url(entries, base_config)
 
             self.assertEqual(len(results), 2)
             for r in results:
@@ -4353,10 +4353,10 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
             url_file = f.name
 
         try:
-            with patch("sys.argv", ["pywrk", "--url-file", url_file, "-n", "1"]):
-                with patch("pywrk.main.run_multi_url", new_callable=AsyncMock, return_value=[]) as mock_run:
+            with patch("sys.argv", ["pywrkr", "--url-file", url_file, "-n", "1"]):
+                with patch("pywrkr.main.run_multi_url", new_callable=AsyncMock, return_value=[]) as mock_run:
                     with self.assertRaises(SystemExit):
-                        pywrk_main.main()
+                        pywrkr_main.main()
                     mock_run.assert_called_once()
                     entries_arg = mock_run.call_args[0][0]
                     self.assertEqual(len(entries_arg), 1)
@@ -4366,9 +4366,9 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
 
     def test_url_file_not_found_error(self):
         """--url-file with non-existent file should error."""
-        with patch("sys.argv", ["pywrk", "--url-file", "/nonexistent/urls.txt"]):
+        with patch("sys.argv", ["pywrkr", "--url-file", "/nonexistent/urls.txt"]):
             with self.assertRaises(SystemExit) as cm:
-                pywrk_main.main()
+                pywrkr_main.main()
             self.assertEqual(cm.exception.code, 2)
 
     def test_url_file_invalid_scheme(self):
@@ -4378,9 +4378,9 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
             url_file = f.name
 
         try:
-            with patch("sys.argv", ["pywrk", "--url-file", url_file]):
+            with patch("sys.argv", ["pywrkr", "--url-file", url_file]):
                 with self.assertRaises(SystemExit) as cm:
-                    pywrk_main.main()
+                    pywrkr_main.main()
                 self.assertEqual(cm.exception.code, 2)
         finally:
             os.unlink(url_file)

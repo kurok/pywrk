@@ -1,4 +1,4 @@
-# pywrk
+# pywrkr
 
 A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and [Apache ab](https://httpd.apache.org/docs/current/programs/ab.html), with extended statistics and virtual user simulation.
 
@@ -34,45 +34,45 @@ pip install aiohttp
 
 ```bash
 # Basic 10-second benchmark with 10 connections
-python pywrk.py http://localhost:8080/
+python pywrkr.py http://localhost:8080/
 
 # 30 seconds, 200 concurrent connections
-python pywrk.py -c 200 -d 30 http://localhost:8080/api
+python pywrkr.py -c 200 -d 30 http://localhost:8080/api
 
 # Send exactly 1000 requests with 50 connections (ab-style)
-python pywrk.py -n 1000 -c 50 http://localhost:8080/
+python pywrkr.py -n 1000 -c 50 http://localhost:8080/
 
 # Simulate 1500 users for 5 minutes with 30s ramp-up and 1s think time
-python pywrk.py -u 1500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
+python pywrkr.py -u 1500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
 
 # Cache-busting mode (bypass HTTP caches with random query param)
-python pywrk.py -R -c 100 -d 10 http://localhost:8080/
+python pywrkr.py -R -c 100 -d 10 http://localhost:8080/
 
 # Constant rate: 500 requests/sec for 30 seconds
-python pywrk.py --rate 500 -d 30 http://localhost:8080/
+python pywrkr.py --rate 500 -d 30 http://localhost:8080/
 
 # Rate ramp: linearly increase from 100 to 1000 req/s over 60 seconds
-python pywrk.py --rate 100 --rate-ramp 1000 -d 60 http://localhost:8080/
+python pywrkr.py --rate 100 --rate-ramp 1000 -d 60 http://localhost:8080/
 
 # Autofind: automatically find max sustainable load
-python pywrk.py --autofind --max-error-rate 1 --max-p95 5.0 http://localhost:8080/
+python pywrkr.py --autofind --max-error-rate 1 --max-p95 5.0 http://localhost:8080/
 
 # SLO thresholds: exit code 2 if any threshold breached (CI-friendly)
-python pywrk.py --threshold "p95 < 300ms" --threshold "error_rate < 1%" \
+python pywrkr.py --threshold "p95 < 300ms" --threshold "error_rate < 1%" \
     -c 100 -d 30 http://localhost:8080/
 
 # Export metrics to OpenTelemetry collector
-python pywrk.py --otel-endpoint http://localhost:4318 \
+python pywrkr.py --otel-endpoint http://localhost:4318 \
     --tag environment=staging --tag build=v1.2.3 \
     -c 100 -d 30 http://localhost:8080/
 
 # Push metrics to Prometheus Pushgateway
-python pywrk.py --prom-remote-write http://pushgateway:9091 \
+python pywrkr.py --prom-remote-write http://pushgateway:9091 \
     --tag region=us-east-1 --tag service=api \
     -c 100 -d 30 http://localhost:8080/
 
 # POST with auth, cookies, and JSON output
-python pywrk.py -n 500 -c 20 -m POST -b '{"key":"val"}' \
+python pywrkr.py -n 500 -c 20 -m POST -b '{"key":"val"}' \
     -H "Content-Type: application/json" \
     -A user:pass -C "session=abc123" \
     --json results.json http://localhost:8080/api
@@ -81,7 +81,7 @@ python pywrk.py -n 500 -c 20 -m POST -b '{"key":"val"}' \
 ## Usage
 
 ```
-usage: pywrk.py [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
+usage: pywrkr.py [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
                 [-t THREADS] [-m METHOD] [-H NAME:VALUE] [-b BODY]
                 [-p POST_FILE] [-A user:pass] [-C COOKIE] [-k]
                 [--no-keepalive] [-l] [-v VERBOSITY] [--timeout TIMEOUT]
@@ -208,7 +208,7 @@ Use `--json results.json` to save structured results:
 Runs for a fixed duration with a pool of persistent connections:
 
 ```bash
-python pywrk.py -c 100 -d 30 http://localhost:8080/
+python pywrkr.py -c 100 -d 30 http://localhost:8080/
 ```
 
 ### Request-Count Mode (ab-style)
@@ -216,7 +216,7 @@ python pywrk.py -c 100 -d 30 http://localhost:8080/
 Sends exactly N requests, then stops:
 
 ```bash
-python pywrk.py -n 10000 -c 50 http://localhost:8080/
+python pywrkr.py -n 10000 -c 50 http://localhost:8080/
 ```
 
 ### User Simulation Mode
@@ -224,7 +224,7 @@ python pywrk.py -n 10000 -c 50 http://localhost:8080/
 Simulates realistic user behavior with configurable think time and gradual ramp-up:
 
 ```bash
-python pywrk.py -u 500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
+python pywrkr.py -u 500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
 ```
 
 Each virtual user:
@@ -240,7 +240,7 @@ The ramp-up period gradually introduces users to avoid a thundering herd at star
 Append `-R` to any mode to bypass HTTP caches by adding a unique query parameter to each request:
 
 ```bash
-python pywrk.py -R -u 300 -d 120 https://example.com/
+python pywrkr.py -R -u 300 -d 120 https://example.com/
 # Each request hits: https://example.com/?_cb=<unique-uuid>
 ```
 
@@ -252,23 +252,23 @@ Instead of sending requests as fast as possible, `--rate` sends them at a contro
 
 ```bash
 # Constant 500 req/s for 30 seconds
-python pywrk.py --rate 500 -d 30 http://localhost:8080/
+python pywrkr.py --rate 500 -d 30 http://localhost:8080/
 
 # Rate with request count: 50 req/s, stop after 200 requests
-python pywrk.py --rate 50 -n 200 http://localhost:8080/
+python pywrkr.py --rate 50 -n 200 http://localhost:8080/
 
 # Rate limiting with multiple connections (rate is global, shared across all workers)
-python pywrk.py --rate 100 -c 10 -d 60 http://localhost:8080/
+python pywrkr.py --rate 100 -c 10 -d 60 http://localhost:8080/
 
 # Combine with user simulation (applies when think_time is 0)
-python pywrk.py --rate 200 -u 50 -d 120 --think-time 0 http://localhost:8080/
+python pywrkr.py --rate 200 -u 50 -d 120 --think-time 0 http://localhost:8080/
 ```
 
 **Rate Ramp** (`--rate-ramp`): Linearly increase the rate over the test duration. This is useful for finding the exact breaking point automatically:
 
 ```bash
 # Start at 100 req/s, linearly increase to 1000 req/s over 60 seconds
-python pywrk.py --rate 100 --rate-ramp 1000 -d 60 http://localhost:8080/
+python pywrkr.py --rate 100 --rate-ramp 1000 -d 60 http://localhost:8080/
 ```
 
 At `--rate 500`, the tool sends one request every 2ms. If the server cannot keep up (latency exceeds the interval), requests queue up -- this is expected and useful for identifying saturation points.
@@ -289,10 +289,10 @@ Use `--latency-breakdown` to see where each request spends its time. This breaks
 
 ```bash
 # Show latency breakdown for each phase
-python pywrk.py --latency-breakdown -n 1000 -c 50 https://example.com/
+python pywrkr.py --latency-breakdown -n 1000 -c 50 https://example.com/
 
 # Combine with JSON output
-python pywrk.py --latency-breakdown --json results.json -d 30 https://example.com/
+python pywrkr.py --latency-breakdown --json results.json -d 30 https://example.com/
 ```
 
 Output includes averages with min/max/p50/p95 for each phase:
@@ -329,21 +329,21 @@ Automatically increase load until the server's capacity is found. The `--autofin
 
 ```bash
 # Find max capacity with default thresholds (1% error rate, 5s p95)
-python pywrk.py --autofind https://example.com/
+python pywrkr.py --autofind https://example.com/
 
 # Custom thresholds: 0.5% error rate, 2s p95, 15s steps
-python pywrk.py --autofind --max-error-rate 0.5 --max-p95 2.0 \
+python pywrkr.py --autofind --max-error-rate 0.5 --max-p95 2.0 \
     --step-duration 15 https://example.com/
 
 # Start from 50 users, up to 5000, multiply by 1.5x each step
-python pywrk.py --autofind --start-users 50 --max-users 5000 \
+python pywrkr.py --autofind --start-users 50 --max-users 5000 \
     --step-multiplier 1.5 https://example.com/
 
 # Save detailed results to JSON
-python pywrk.py --autofind --json autofind_results.json https://example.com/
+python pywrkr.py --autofind --json autofind_results.json https://example.com/
 
 # With cache-busting and custom think time
-python pywrk.py --autofind -R --think-time 0.5 https://example.com/
+python pywrkr.py --autofind -R --think-time 0.5 https://example.com/
 ```
 
 **How it works:**
@@ -391,14 +391,14 @@ python pywrk.py --autofind -R --think-time 0.5 https://example.com/
 
 ### SLO-Aware Thresholds
 
-Define pass/fail criteria for your benchmarks. If any threshold is breached, pywrk exits with code 2 — making it usable in CI/CD pipelines.
+Define pass/fail criteria for your benchmarks. If any threshold is breached, pywrkr exits with code 2 — making it usable in CI/CD pipelines.
 
 ```bash
 # Single threshold
-python pywrk.py --threshold "p95 < 300ms" -c 100 -d 30 http://localhost:8080/
+python pywrkr.py --threshold "p95 < 300ms" -c 100 -d 30 http://localhost:8080/
 
 # Multiple thresholds
-python pywrk.py \
+python pywrkr.py \
     --th "p95 < 300ms" \
     --th "p99 < 1s" \
     --th "error_rate < 1%" \
@@ -431,7 +431,7 @@ python pywrk.py \
 
 **CI usage:**
 ```bash
-python pywrk.py --th "p95 < 500ms" --th "error_rate < 0.1%" \
+python pywrkr.py --th "p95 < 500ms" --th "error_rate < 0.1%" \
     -c 50 -d 60 http://api.staging/health || echo "Performance regression detected!"
 ```
 
@@ -442,30 +442,30 @@ Export benchmark metrics directly to your observability stack.
 #### OpenTelemetry
 
 ```bash
-pip install pywrk[otel]
-python pywrk.py --otel-endpoint http://localhost:4318 \
+pip install pywrkr[otel]
+python pywrkr.py --otel-endpoint http://localhost:4318 \
     --tag environment=staging --tag build=$(git rev-parse --short HEAD) \
     -c 100 -d 30 http://localhost:8080/
 ```
 
-Exports gauges and counters: `pywrk.requests.total`, `pywrk.errors.total`, `pywrk.requests_per_sec`, `pywrk.latency.p50/p95/p99/mean/max`, `pywrk.transfer_bytes_per_sec`, `pywrk.duration_sec`.
+Exports gauges and counters: `pywrkr.requests.total`, `pywrkr.errors.total`, `pywrkr.requests_per_sec`, `pywrkr.latency.p50/p95/p99/mean/max`, `pywrkr.transfer_bytes_per_sec`, `pywrkr.duration_sec`.
 
 #### Prometheus Remote Write (Pushgateway)
 
 ```bash
-python pywrk.py --prom-remote-write http://pushgateway:9091 \
+python pywrkr.py --prom-remote-write http://pushgateway:9091 \
     --tag region=us-east-1 --tag service=api \
     -c 100 -d 30 http://localhost:8080/
 ```
 
-Uses stdlib `urllib` — no extra dependencies. Pushes metrics in Prometheus text format to `{endpoint}/metrics/job/pywrk`.
+Uses stdlib `urllib` — no extra dependencies. Pushes metrics in Prometheus text format to `{endpoint}/metrics/job/pywrkr`.
 
 #### Test Metadata Tags
 
 Tags are attached to all exported metrics and included in JSON output:
 
 ```bash
-python pywrk.py --tag environment=production --tag build=v2.1.0 \
+python pywrkr.py --tag environment=production --tag build=v2.1.0 \
     --tag region=eu-west-1 --tag test_name=api_stress \
     --json results.json -c 100 -d 30 http://localhost:8080/
 ```
@@ -474,28 +474,28 @@ python pywrk.py --tag environment=production --tag build=v2.1.0 \
 
 ```bash
 # Basic (aiohttp only)
-pip install pywrk
+pip install pywrkr
 
 # With live TUI dashboard
-pip install pywrk[tui]
+pip install pywrkr[tui]
 
 # With OpenTelemetry export
-pip install pywrk[otel]
+pip install pywrkr[otel]
 
 # Everything
-pip install pywrk[all]
+pip install pywrkr[all]
 ```
 
 ## Testing
 
 ```bash
 # Run all tests
-python -m pytest test_pywrk.py -v
+python -m pytest test_pywrkr.py -v
 
 # Run specific test class
-python -m pytest test_pywrk.py::TestMakeUrl -v
-python -m pytest test_pywrk.py::TestBenchmarkIntegration -v
-python -m pytest test_pywrk.py::TestAutofindIntegration -v
+python -m pytest test_pywrkr.py::TestMakeUrl -v
+python -m pytest test_pywrkr.py::TestBenchmarkIntegration -v
+python -m pytest test_pywrkr.py::TestAutofindIntegration -v
 ```
 
 The test suite includes unit and integration tests covering:

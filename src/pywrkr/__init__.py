@@ -1,6 +1,6 @@
-"""pywrk - A Python HTTP benchmarking tool inspired by wrk and Apache ab."""
+"""pywrkr - A Python HTTP benchmarking tool inspired by wrk and Apache ab."""
 
-from pywrk.main import (  # noqa: F401
+from pywrkr.main import (  # noqa: F401
     # Data structures
     RequestResult,
     LatencyBreakdown,
@@ -74,7 +74,7 @@ from pywrk.main import (  # noqa: F401
     _write_autofind_json,
 )
 
-# Re-export main function under a different name to avoid shadowing pywrk.main module
-from pywrk.main import main as cli_main  # noqa: F401
+# Re-export main function under a different name to avoid shadowing pywrkr.main module
+from pywrkr.main import main as cli_main  # noqa: F401
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
