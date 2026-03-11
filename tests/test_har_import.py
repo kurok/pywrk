@@ -177,7 +177,8 @@ class TestFilterEntries(unittest.TestCase):
         config = HarImportConfig(allowed_domains=["api.example.com"])
         result = filter_entries(self._entries(), config)
         self.assertEqual(len(result), 2)
-        self.assertTrue(all("api.example.com" in e.url for e in result))
+        from urllib.parse import urlparse
+        self.assertTrue(all(urlparse(e.url).hostname == "api.example.com" for e in result))
 
     def test_exclude_pattern(self):
         config = HarImportConfig(exclude_patterns=[r"/orders"])
