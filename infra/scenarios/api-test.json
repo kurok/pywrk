@@ -1,0 +1,42 @@
+{
+  "name": "API endpoint multi-step test",
+  "description": "Tests multiple API endpoints in sequence per virtual user iteration",
+  "steps": [
+    {
+      "name": "health_check",
+      "method": "GET",
+      "url": "${TARGET_URL}/health",
+      "headers": {
+        "Accept": "application/json"
+      }
+    },
+    {
+      "name": "list_items",
+      "method": "GET",
+      "url": "${TARGET_URL}/api/v1/items?limit=10",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
+    },
+    {
+      "name": "create_item",
+      "method": "POST",
+      "url": "${TARGET_URL}/api/v1/items",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer ${API_TOKEN}"
+      },
+      "body": "{\"name\": \"load-test-item\", \"value\": 42}"
+    },
+    {
+      "name": "get_item",
+      "method": "GET",
+      "url": "${TARGET_URL}/api/v1/items/1",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
+    }
+  ]
+}

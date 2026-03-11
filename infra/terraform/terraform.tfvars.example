@@ -1,0 +1,45 @@
+# --- Required ---
+aws_region  = "us-east-1"
+environment = "dev"
+target_url  = "https://example.com"
+
+# --- Optional: adjust as needed ---
+container_image = "ghcr.io/kurok/pywrkr:latest"
+worker_count  = 3
+test_duration = 300
+connections   = 100
+
+# Virtual users mode (set users > 0 to enable, disables connection mode)
+# users = 500
+
+# Rate limiting (requests per second, 0 = unlimited)
+# rate = 1000
+
+# SLO thresholds — test exits non-zero if breached
+# thresholds = ["p95 < 500ms", "error_rate < 1%"]
+
+# Scenario mode — path inside the container
+# scenario_file = "/scenarios/api-test.json"
+
+# Metadata tags
+# tags = {
+#   team        = "platform"
+#   test_name   = "homepage-soak"
+# }
+
+# Observability endpoints (optional)
+# otel_endpoint     = "https://otel-collector.internal:4318"
+# prom_remote_write = "https://pushgateway.internal:9091"
+
+# Cost control: NAT gateway adds ~$32/mo per AZ.
+# Set to true if tasks must run in private subnets.
+enable_nat_gateway = false
+
+# Task sizing
+master_cpu    = 1024
+master_memory = 2048
+worker_cpu    = 1024
+worker_memory = 2048
+
+# Logging
+log_retention_days = 14

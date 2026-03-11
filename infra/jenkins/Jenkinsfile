@@ -1,0 +1,354 @@
+/**
+ * pywrkr Distributed Load Test Pipeline
+ *
+ * Deploys and runs pywrkr load tests on AWS ECS Fargate using the
+ * pre-built image from GitHub Container Registry.
+ *
+ * Produces an interactive HTML report as the primary build artifact.
+ *
+ * Prerequisites:
+ *   - AWS credentials in Jenkins credential store (aws-access-key-id, aws-secret-access-key)
+ *   - Terraform >= 1.6 on the Jenkins agent
+ *   - aws-cli v2 on the Jenkins agent
+ *   - HTML Publisher plugin (optional, for inline report viewing)
+ */
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'AWS_REGION',
+            choices: ['us-east-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1'],
+            description: 'AWS region for deployment'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Environment name'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'pywrkr image tag from ghcr.io/kurok/pywrkr'
+        )
+        string(
+            name: 'TARGET_URL',
+            defaultValue: 'https://example.com',
+            description: 'Target URL for the load test'
+        )
+        string(
+            name: 'TEST_DURATION',
+            defaultValue: '60',
+            description: 'Test duration in seconds'
+        )
+        string(
+            name: 'USERS',
+            defaultValue: '0',
+            description: 'Virtual users (0 = connection mode instead)'
+        )
+        string(
+            name: 'CONNECTIONS',
+            defaultValue: '10',
+            description: 'Concurrent connections per worker (ignored if USERS > 0)'
+        )
+        string(
+            name: 'RATE',
+            defaultValue: '0',
+            description: 'Target RPS (0 = unlimited)'
+        )
+        string(
+            name: 'WORKER_COUNT',
+            defaultValue: '2',
+            description: 'Number of pywrkr worker containers'
+        )
+        string(
+            name: 'THRESHOLDS',
+            defaultValue: '',
+            description: 'Comma-separated SLO thresholds (e.g. "p95 < 500ms,error_rate < 1%")'
+        )
+        string(
+            name: 'SCENARIO_FILE',
+            defaultValue: '',
+            description: 'Scenario file path inside container (e.g. /scenarios/api-test.json). Leave empty for simple URL mode.'
+        )
+        booleanParam(
+            name: 'CLEANUP_AFTER_RUN',
+            defaultValue: true,
+            description: 'Scale services to 0 after test completes'
+        )
+        booleanParam(
+            name: 'DESTROY_INFRA',
+            defaultValue: false,
+            description: 'Destroy all Terraform infrastructure after test (use with caution)'
+        )
+    }
+
+    environment {
+        TF_DIR                = "${WORKSPACE}/infra/terraform"
+        AWS_DEFAULT_REGION    = "us-east-1"
+        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
+    }
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Verify AWS Access') {
+            steps {
+                sh 'aws sts get-caller-identity'
+            }
+        }
+
+        stage('Prepare Terraform Vars') {
+            steps {
+                script {
+                    def thresholdList = params.THRESHOLDS
+                        ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ')
+                        : ''
+
+                    def region      = params.AWS_REGION ?: 'us-east-1'
+                    def environment = params.ENVIRONMENT ?: 'dev'
+                    def imageTag    = params.IMAGE_TAG ?: 'latest'
+                    def targetUrl   = params.TARGET_URL ?: 'https://example.com'
+                    def duration    = params.TEST_DURATION ?: '60'
+                    def conns       = params.CONNECTIONS ?: '10'
+                    def users       = params.USERS ?: '0'
+                    def rate        = params.RATE ?: '0'
+                    def workers     = params.WORKER_COUNT ?: '2'
+                    def scenario    = params.SCENARIO_FILE ?: ''
+
+                    writeFile file: "${env.TF_DIR}/jenkins.auto.tfvars", text: """
+aws_region         = "${region}"
+environment        = "${environment}"
+container_image    = "ghcr.io/kurok/pywrkr:${imageTag}"
+target_url         = "${targetUrl}"
+test_duration      = ${duration}
+connections        = ${conns}
+users              = ${users}
+rate               = ${rate}
+worker_count       = ${workers}
+thresholds         = [${thresholdList}]
+scenario_file      = "${scenario}"
+enable_nat_gateway = false
+"""
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform init -input=false'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform plan -input=false -out=tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform apply -input=false -auto-approve tfplan'
+                }
+            }
+        }
+
+        stage('Run Load Test') {
+            steps {
+                script {
+                    env.ECS_CLUSTER = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw ecs_cluster_name",
+                        returnStdout: true
+                    ).trim()
+                    env.MASTER_SERVICE = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw master_service_name",
+                        returnStdout: true
+                    ).trim()
+                    env.WORKER_SERVICE = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
+                        returnStdout: true
+                    ).trim()
+
+                    // Record the start timestamp before triggering deployment
+                    env.TEST_START_TIME = "${System.currentTimeMillis()}"
+
+                    sh """
+                        echo "Triggering new deployment (fresh test run)..."
+                        aws ecs update-service \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --service ${env.MASTER_SERVICE} \
+                            --force-new-deployment \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --no-cli-pager > /dev/null
+
+                        aws ecs update-service \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --service ${env.WORKER_SERVICE} \
+                            --force-new-deployment \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --no-cli-pager > /dev/null
+
+                        echo "Deployment triggered. Waiting for test results in CloudWatch..."
+                    """
+                }
+            }
+        }
+
+        stage('Collect & Generate Report') {
+            steps {
+                script {
+                    def masterLogGroup = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
+                        returnStdout: true
+                    ).trim()
+
+                    // Use the timestamp from before we triggered the deployment
+                    def startTime = env.TEST_START_TIME
+
+                    // Poll CloudWatch for the JSON end marker (max 10 min)
+                    // This accounts for: Fargate task startup + test duration + result upload
+                    def foundJson = false
+                    for (int i = 0; i < 60; i++) {
+                        def check = sh(
+                            script: """
+                                aws logs filter-log-events \
+                                    --log-group-name "${masterLogGroup}" \
+                                    --start-time ${startTime} \
+                                    --filter-pattern "PYWRKR_JSON_END" \
+                                    --region ${AWS_DEFAULT_REGION} \
+                                    --no-cli-pager \
+                                    --output text \
+                                    --query 'events[0].message' 2>/dev/null || true
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        if (check.contains('PYWRKR_JSON_END')) {
+                            foundJson = true
+                            echo "Test complete. JSON results found in CloudWatch."
+                            break
+                        }
+                        if (i % 6 == 0) {
+                            echo "Waiting for test to complete... (${i * 10}s elapsed)"
+                        }
+                        sleep 10
+                    }
+
+                    if (!foundJson) {
+                        error("Timed out waiting for pywrkr results (10 min). Check ECS task logs.")
+                    }
+
+                    // Fetch all master logs and extract JSON between markers
+                    sh """
+                        mkdir -p pywrkr-report
+
+                        aws logs filter-log-events \
+                            --log-group-name "${masterLogGroup}" \
+                            --start-time ${startTime} \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --no-cli-pager \
+                            --output json \
+                            --query 'events[*].message' > raw_logs.json
+
+                        python3 -c "
+import json, re, sys
+messages = json.load(open('raw_logs.json'))
+full = chr(10).join(messages)
+m = re.search(r'---PYWRKR_JSON_START---\\s*(.+?)\\s*---PYWRKR_JSON_END---', full, re.DOTALL)
+if not m:
+    print('ERROR: JSON markers not found in logs', file=sys.stderr)
+    sys.exit(1)
+data = json.loads(m.group(1))
+json.dump(data, open('pywrkr-report/results.json', 'w'), indent=2)
+print('Extracted results.json (%d bytes)' % len(json.dumps(data)))
+"
+
+                        python3 infra/jenkins/generate_report.py pywrkr-report/results.json pywrkr-report/report.html
+                        ls -la pywrkr-report/
+                    """
+                }
+            }
+        }
+
+        stage('Publish Report') {
+            steps {
+                archiveArtifacts artifacts: 'pywrkr-report/**', allowEmptyArchive: true
+
+                publishHTML(target: [
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'pywrkr-report',
+                    reportFiles: 'report.html',
+                    reportName: 'pywrkr Load Test Report',
+                    reportTitles: 'Load Test Results'
+                ])
+            }
+        }
+
+        stage('Cleanup') {
+            when {
+                expression { return params.CLEANUP_AFTER_RUN || params.DESTROY_INFRA }
+            }
+            steps {
+                script {
+                    if (params.DESTROY_INFRA) {
+                        dir(env.TF_DIR) {
+                            sh 'terraform destroy -input=false -auto-approve'
+                        }
+                    } else if (params.CLEANUP_AFTER_RUN) {
+                        sh """
+                            aws ecs update-service \
+                                --cluster ${env.ECS_CLUSTER} \
+                                --service ${env.WORKER_SERVICE} \
+                                --desired-count 0 \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --no-cli-pager > /dev/null
+
+                            aws ecs update-service \
+                                --cluster ${env.ECS_CLUSTER} \
+                                --service ${env.MASTER_SERVICE} \
+                                --desired-count 0 \
+                                --region ${AWS_DEFAULT_REGION} \
+                                --no-cli-pager > /dev/null
+
+                            echo "Services scaled to 0. Infrastructure remains for next run."
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Load test completed. View the HTML report in build artifacts."
+        }
+        failure {
+            echo "Load test failed. Check build console output."
+        }
+        always {
+            node('') {
+                cleanWs()
+            }
+        }
+    }
+}
