@@ -353,7 +353,9 @@ enable_nat_gateway = false
             echo "Load test failed. Check CloudWatch logs and archived artifacts."
         }
         always {
-            cleanWs()
+            node('') {
+                cleanWs()
+            }
         }
     }
 }
