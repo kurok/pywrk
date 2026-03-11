@@ -19,5 +19,13 @@ venv/
 *.swp
 *.swo
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+*.auto.tfvars
+
 # OS
 .DS_Store

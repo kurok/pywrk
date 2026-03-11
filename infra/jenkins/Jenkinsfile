@@ -1,0 +1,359 @@
+/**
+ * pywrkr Distributed Load Test Pipeline
+ *
+ * Builds, deploys, and runs pywrkr load tests on AWS ECS Fargate.
+ * Supports simple URL mode and scenario-driven API testing.
+ *
+ * Prerequisites:
+ *   - AWS credentials configured (Jenkins AWS credentials plugin or IAM role)
+ *   - Terraform >= 1.6 on the Jenkins agent
+ *   - Docker on the Jenkins agent (for image builds)
+ *   - aws-cli v2 on the Jenkins agent
+ */
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'AWS_REGION',
+            choices: ['us-east-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1'],
+            description: 'AWS region for deployment'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Environment name'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Docker image tag to build and deploy'
+        )
+        string(
+            name: 'TARGET_URL',
+            defaultValue: 'https://example.com',
+            description: 'Target URL for the load test'
+        )
+        string(
+            name: 'TEST_DURATION',
+            defaultValue: '300',
+            description: 'Test duration in seconds'
+        )
+        string(
+            name: 'USERS',
+            defaultValue: '0',
+            description: 'Virtual users (0 = connection mode instead)'
+        )
+        string(
+            name: 'CONNECTIONS',
+            defaultValue: '100',
+            description: 'Concurrent connections per worker (ignored if USERS > 0)'
+        )
+        string(
+            name: 'RATE',
+            defaultValue: '0',
+            description: 'Target RPS (0 = unlimited)'
+        )
+        string(
+            name: 'WORKER_COUNT',
+            defaultValue: '3',
+            description: 'Number of pywrkr worker containers'
+        )
+        string(
+            name: 'THRESHOLDS',
+            defaultValue: '',
+            description: 'Comma-separated SLO thresholds (e.g. "p95 < 500ms,error_rate < 1%")'
+        )
+        string(
+            name: 'SCENARIO_FILE',
+            defaultValue: '',
+            description: 'Scenario file path inside container (e.g. /scenarios/api-test.json). Leave empty for simple URL mode.'
+        )
+        booleanParam(
+            name: 'CLEANUP_AFTER_RUN',
+            defaultValue: false,
+            description: 'Scale services to 0 after test completes'
+        )
+        booleanParam(
+            name: 'DESTROY_INFRA',
+            defaultValue: false,
+            description: 'Destroy all Terraform infrastructure after test (use with caution)'
+        )
+    }
+
+    environment {
+        TF_DIR         = "${WORKSPACE}/infra/terraform"
+        DOCKER_CONTEXT = "${WORKSPACE}"
+        DOCKERFILE     = "${WORKSPACE}/infra/docker/Dockerfile"
+        AWS_REGION     = "${params.AWS_REGION}"
+        TF_VAR_FILE    = "${WORKSPACE}/infra/terraform/jenkins.auto.tfvars"
+    }
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Prepare Terraform Vars') {
+            steps {
+                script {
+                    // Convert comma-separated thresholds to Terraform list
+                    def thresholdList = params.THRESHOLDS
+                        ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ')
+                        : ''
+
+                    writeFile file: env.TF_VAR_FILE, text: """
+aws_region         = "${params.AWS_REGION}"
+environment        = "${params.ENVIRONMENT}"
+image_tag          = "${params.IMAGE_TAG}"
+target_url         = "${params.TARGET_URL}"
+test_duration      = ${params.TEST_DURATION}
+connections        = ${params.CONNECTIONS}
+users              = ${params.USERS}
+rate               = ${params.RATE}
+worker_count       = ${params.WORKER_COUNT}
+thresholds         = [${thresholdList}]
+scenario_file      = "${params.SCENARIO_FILE}"
+enable_nat_gateway = false
+"""
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    def accountId = sh(
+                        script: "aws sts get-caller-identity --query Account --output text",
+                        returnStdout: true
+                    ).trim()
+                    env.AWS_ACCOUNT_ID = accountId
+                    env.ECR_REPO = "${accountId}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/pywrkr-${params.ENVIRONMENT}-pywrkr"
+
+                    sh """
+                        docker build \
+                            -f ${env.DOCKERFILE} \
+                            -t pywrkr:${params.IMAGE_TAG} \
+                            ${env.DOCKER_CONTEXT}
+                    """
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh """
+                    aws ecr get-login-password --region ${params.AWS_REGION} \
+                        | docker login --username AWS --password-stdin ${env.ECR_REPO}
+
+                    docker tag pywrkr:${params.IMAGE_TAG} ${env.ECR_REPO}:${params.IMAGE_TAG}
+                    docker push ${env.ECR_REPO}:${params.IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform init -input=false'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform plan -input=false -out=tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                dir(env.TF_DIR) {
+                    sh 'terraform apply -input=false -auto-approve tfplan'
+                }
+            }
+        }
+
+        stage('Wait for ECS Stability') {
+            steps {
+                script {
+                    def clusterName = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw ecs_cluster_name",
+                        returnStdout: true
+                    ).trim()
+                    def masterService = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw master_service_name",
+                        returnStdout: true
+                    ).trim()
+                    def workerService = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
+                        returnStdout: true
+                    ).trim()
+
+                    env.ECS_CLUSTER = clusterName
+                    env.MASTER_SERVICE = masterService
+                    env.WORKER_SERVICE = workerService
+
+                    // Wait for master first, then workers
+                    sh """
+                        echo "Waiting for master service to stabilize..."
+                        aws ecs wait services-stable \
+                            --cluster ${clusterName} \
+                            --services ${masterService} \
+                            --region ${params.AWS_REGION}
+
+                        echo "Waiting for worker service to stabilize..."
+                        aws ecs wait services-stable \
+                            --cluster ${clusterName} \
+                            --services ${workerService} \
+                            --region ${params.AWS_REGION}
+
+                        echo "All services stable."
+                    """
+                }
+            }
+        }
+
+        stage('Trigger Load Test') {
+            steps {
+                script {
+                    // Force new deployment of master to start a fresh test run.
+                    // The master will wait for workers, distribute config, and run.
+                    sh """
+                        echo "Triggering new deployment (fresh test run)..."
+                        aws ecs update-service \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --service ${env.MASTER_SERVICE} \
+                            --force-new-deployment \
+                            --region ${params.AWS_REGION} \
+                            --no-cli-pager
+
+                        aws ecs update-service \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --service ${env.WORKER_SERVICE} \
+                            --force-new-deployment \
+                            --region ${params.AWS_REGION} \
+                            --no-cli-pager
+
+                        echo "Waiting for new deployment to stabilize..."
+                        aws ecs wait services-stable \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --services ${env.MASTER_SERVICE} ${env.WORKER_SERVICE} \
+                            --region ${params.AWS_REGION}
+                    """
+                }
+            }
+        }
+
+        stage('Fetch CloudWatch Logs') {
+            steps {
+                script {
+                    def masterLogGroup = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
+                        returnStdout: true
+                    ).trim()
+                    def workerLogGroup = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw worker_log_group",
+                        returnStdout: true
+                    ).trim()
+
+                    // Fetch last 30 minutes of logs
+                    def startTime = System.currentTimeMillis() - (30 * 60 * 1000)
+
+                    sh """
+                        echo "=== Master Logs ==="
+                        aws logs filter-log-events \
+                            --log-group-name "${masterLogGroup}" \
+                            --start-time ${startTime} \
+                            --region ${params.AWS_REGION} \
+                            --no-cli-pager \
+                            --output text \
+                            --query 'events[*].message' \
+                            | tee master-logs.txt
+
+                        echo ""
+                        echo "=== Worker Logs ==="
+                        aws logs filter-log-events \
+                            --log-group-name "${workerLogGroup}" \
+                            --start-time ${startTime} \
+                            --region ${params.AWS_REGION} \
+                            --no-cli-pager \
+                            --output text \
+                            --query 'events[*].message' \
+                            | tee worker-logs.txt
+                    """
+
+                    // Check for threshold breaches in master logs
+                    def masterLogs = readFile('master-logs.txt')
+                    if (masterLogs.contains('THRESHOLD BREACHED') || masterLogs.contains('exit code: 2')) {
+                        error("Load test failed: SLO threshold breached. Check master logs for details.")
+                    }
+                }
+            }
+        }
+
+        stage('Archive Artifacts') {
+            steps {
+                archiveArtifacts artifacts: 'master-logs.txt,worker-logs.txt', allowEmptyArchive: true
+            }
+        }
+
+        stage('Cleanup') {
+            when {
+                expression { return params.CLEANUP_AFTER_RUN || params.DESTROY_INFRA }
+            }
+            steps {
+                script {
+                    if (params.DESTROY_INFRA) {
+                        dir(env.TF_DIR) {
+                            sh 'terraform destroy -input=false -auto-approve'
+                        }
+                    } else if (params.CLEANUP_AFTER_RUN) {
+                        // Scale to 0 to stop billing
+                        sh """
+                            aws ecs update-service \
+                                --cluster ${env.ECS_CLUSTER} \
+                                --service ${env.WORKER_SERVICE} \
+                                --desired-count 0 \
+                                --region ${params.AWS_REGION} \
+                                --no-cli-pager
+
+                            aws ecs update-service \
+                                --cluster ${env.ECS_CLUSTER} \
+                                --service ${env.MASTER_SERVICE} \
+                                --desired-count 0 \
+                                --region ${params.AWS_REGION} \
+                                --no-cli-pager
+
+                            echo "Services scaled to 0. Infrastructure remains for next run."
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Load test completed successfully."
+        }
+        failure {
+            echo "Load test failed. Check CloudWatch logs and archived artifacts."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
