@@ -6,7 +6,14 @@ import json
 import sys
 import time
 
-from pywrkr.config import BenchmarkConfig, WorkerStats
+from pywrkr.config import (
+    DEFAULT_CONNECTIONS,
+    DEFAULT_THINK_TIME_JITTER,
+    DEFAULT_THREADS,
+    DEFAULT_TIMEOUT,
+    BenchmarkConfig,
+    WorkerStats,
+)
 from pywrkr.reporting import (
     evaluate_thresholds,
     print_results,
@@ -48,14 +55,14 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
     body = base64.b64decode(data["body"]) if data.get("body") else None
     return BenchmarkConfig(
         url=data["url"],
-        connections=data.get("connections", 10),
+        connections=data.get("connections", DEFAULT_CONNECTIONS),
         duration=data.get("duration"),
         num_requests=data.get("num_requests"),
-        threads=data.get("threads", 4),
+        threads=data.get("threads", DEFAULT_THREADS),
         method=data.get("method", "GET"),
         headers=data.get("headers", {}),
         body=body,
-        timeout_sec=data.get("timeout_sec", 30.0),
+        timeout_sec=data.get("timeout_sec", DEFAULT_TIMEOUT),
         keepalive=data.get("keepalive", True),
         basic_auth=data.get("basic_auth"),
         cookies=data.get("cookies", []),
@@ -68,7 +75,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         users=data.get("users"),
         ramp_up=data.get("ramp_up", 0.0),
         think_time=data.get("think_time", 0.0),
-        think_time_jitter=data.get("think_time_jitter", 0.5),
+        think_time_jitter=data.get("think_time_jitter", DEFAULT_THINK_TIME_JITTER),
         _quiet=True,
     )
 
@@ -138,7 +145,7 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     return merged
 
 
-async def run_master(config: BenchmarkConfig, host: str, port: int, expect_workers: int):
+async def run_master(config: BenchmarkConfig, host: str, port: int, expect_workers: int) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results."""
     print(f"Master: listening on {host}:{port}, waiting for {expect_workers} worker(s)...")
 
@@ -240,7 +247,7 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
     return merged, exit_code
 
 
-async def run_worker_node(master_host: str, master_port: int):
+async def run_worker_node(master_host: str, master_port: int) -> None:
     """Run in worker mode: connect to master, receive config, run benchmark, send results."""
     print(f"Worker: connecting to master at {master_host}:{master_port}...")
 

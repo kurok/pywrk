@@ -24,6 +24,7 @@ class TrafficProfile:
         raise NotImplementedError
 
     def describe(self) -> str:
+        """Return a human-readable description of this profile."""
         return self.name
 
 
@@ -218,7 +219,8 @@ class CsvProfile(TrafficProfile):
         self._is_multiplier: bool = False
         self._load(filepath)
 
-    def _load(self, filepath: str):
+    def _load(self, filepath: str) -> None:
+        """Load and parse CSV data points from file."""
         with open(filepath, newline="") as f:
             reader = csv.reader(f)
             rows = list(reader)
@@ -392,7 +394,8 @@ class RateLimiter:
             return self.start_rate + (self.end_rate - self.start_rate) * progress
         return self.start_rate
 
-    async def acquire(self):
+    async def acquire(self) -> None:
+        """Wait until the next request is allowed under the rate limit."""
         async with self._lock:
             now = time.monotonic()
             if self._start_time is None:

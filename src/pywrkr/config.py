@@ -5,9 +5,27 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+# ---------------------------------------------------------------------------
+# Default constants
+# ---------------------------------------------------------------------------
+DEFAULT_CONNECTIONS = 10
+DEFAULT_DURATION = 10.0
+DEFAULT_THREADS = 4
+DEFAULT_TIMEOUT = 30.0
+DEFAULT_THINK_TIME_JITTER = 0.5
+DEFAULT_MASTER_PORT = 9220
+DEFAULT_AUTOFIND_MAX_ERROR_RATE = 1.0
+DEFAULT_AUTOFIND_MAX_P95 = 5.0
+DEFAULT_AUTOFIND_STEP_DURATION = 30.0
+DEFAULT_AUTOFIND_START_USERS = 10
+DEFAULT_AUTOFIND_MAX_USERS = 10000
+DEFAULT_AUTOFIND_STEP_MULTIPLIER = 2.0
+
 
 @dataclass
 class RequestResult:
+    """Result of a single HTTP request."""
+
     status: int
     latency: float  # seconds
     bytes_read: int
@@ -27,6 +45,8 @@ class LatencyBreakdown:
 
 @dataclass
 class WorkerStats:
+    """Aggregated statistics collected by a single worker."""
+
     results: list[RequestResult] = field(default_factory=list)
     total_requests: int = 0
     total_bytes: int = 0
@@ -42,15 +62,17 @@ class WorkerStats:
 
 @dataclass
 class BenchmarkConfig:
+    """Full configuration for a benchmark run."""
+
     url: str
-    connections: int = 10
-    duration: float | None = 10.0
+    connections: int = DEFAULT_CONNECTIONS
+    duration: float | None = DEFAULT_DURATION
     num_requests: int | None = None  # ab-style -n mode
-    threads: int = 4
+    threads: int = DEFAULT_THREADS
     method: str = "GET"
     headers: dict[str, str] = field(default_factory=dict)
     body: bytes | None = None
-    timeout_sec: float = 30.0
+    timeout_sec: float = DEFAULT_TIMEOUT
     keepalive: bool = True
     basic_auth: str | None = None  # "user:pass"
     cookies: list[str] = field(default_factory=list)  # ["name=value", ...]
@@ -63,7 +85,7 @@ class BenchmarkConfig:
     users: int | None = None  # number of virtual users
     ramp_up: float = 0.0  # seconds to ramp up all users
     think_time: float = 0.0  # mean think time between requests per user (seconds)
-    think_time_jitter: float = 0.5  # jitter factor (0-1): actual = think * uniform(1-jitter, 1+jitter)
+    think_time_jitter: float = DEFAULT_THINK_TIME_JITTER  # jitter factor (0-1): actual = think * uniform(1-jitter, 1+jitter)
     random_param: bool = False  # append random _cb=<uuid> query param per request (cache-buster)
     live_dashboard: bool = False  # show live TUI dashboard (requires rich)
     # Rate limiting mode
@@ -100,16 +122,16 @@ class Threshold:
 class AutofindConfig:
     """Configuration for auto-ramping / step load mode."""
     url: str
-    max_error_rate: float = 1.0  # percent
-    max_p95: float = 5.0  # seconds
-    step_duration: float = 30.0
-    start_users: int = 10
-    max_users: int = 10000
-    step_multiplier: float = 2.0
+    max_error_rate: float = DEFAULT_AUTOFIND_MAX_ERROR_RATE  # percent
+    max_p95: float = DEFAULT_AUTOFIND_MAX_P95  # seconds
+    step_duration: float = DEFAULT_AUTOFIND_STEP_DURATION
+    start_users: int = DEFAULT_AUTOFIND_START_USERS
+    max_users: int = DEFAULT_AUTOFIND_MAX_USERS
+    step_multiplier: float = DEFAULT_AUTOFIND_STEP_MULTIPLIER
     think_time: float = 1.0
-    think_time_jitter: float = 0.5
+    think_time_jitter: float = DEFAULT_THINK_TIME_JITTER
     random_param: bool = False
-    timeout_sec: float = 30.0
+    timeout_sec: float = DEFAULT_TIMEOUT
     keepalive: bool = True
     json_output: str | None = None
 

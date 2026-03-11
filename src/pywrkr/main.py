@@ -14,7 +14,17 @@ import os
 import sys
 from urllib.parse import urlparse
 
-from pywrkr.config import AutofindConfig, BenchmarkConfig, Threshold, load_scenario
+from pywrkr.config import (
+    DEFAULT_CONNECTIONS,
+    DEFAULT_DURATION,
+    DEFAULT_MASTER_PORT,
+    DEFAULT_THREADS,
+    DEFAULT_TIMEOUT,
+    AutofindConfig,
+    BenchmarkConfig,
+    Threshold,
+    load_scenario,
+)
 from pywrkr.distributed import run_master, run_worker_node
 from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
@@ -27,6 +37,7 @@ from pywrkr.workers import run_autofind, run_benchmark, run_user_simulation
 # ---------------------------------------------------------------------------
 
 def parse_header(s: str) -> tuple[str, str]:
+    """Parse a 'Name: Value' header string into a (name, value) tuple."""
     if ":" not in s:
         raise argparse.ArgumentTypeError(f"Invalid header format: {s} (expected 'Name: Value')")
     name, value = s.split(":", 1)
@@ -62,14 +73,14 @@ Examples:
         """,
     )
     parser.add_argument("url", nargs="?", default=None, help="Target URL to benchmark")
-    parser.add_argument("-c", "--connections", type=int, default=10,
-                        help="Number of concurrent connections (default: 10)")
+    parser.add_argument("-c", "--connections", type=int, default=DEFAULT_CONNECTIONS,
+                        help=f"Number of concurrent connections (default: {DEFAULT_CONNECTIONS})")
     parser.add_argument("-d", "--duration", type=float, default=None,
                         help="Duration of test in seconds (default: 10, ignored if -n is set)")
     parser.add_argument("-n", "--num-requests", type=int, default=None,
                         help="Total number of requests to make (ab-style, overrides -d)")
-    parser.add_argument("-t", "--threads", type=int, default=4,
-                        help="Number of worker groups (default: 4)")
+    parser.add_argument("-t", "--threads", type=int, default=DEFAULT_THREADS,
+                        help=f"Number of worker groups (default: {DEFAULT_THREADS})")
     parser.add_argument("-m", "--method", default="GET",
                         help="HTTP method (default: GET)")
     parser.add_argument("-H", "--header", action="append", type=parse_header,
@@ -91,8 +102,8 @@ Examples:
                         help="Verify response Content-Length consistency (ab-style)")
     parser.add_argument("-v", "--verbosity", type=int, default=0,
                         help="Verbosity level: 2=warnings, 3=status codes, 4=headers+body info")
-    parser.add_argument("--timeout", type=float, default=30,
-                        help="Request timeout in seconds (default: 30)")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                        help=f"Request timeout in seconds (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("-e", "--csv", default=None, metavar="FILE",
                         help="Write CSV percentile table to FILE (ab-style)")
     parser.add_argument("-w", "--html", action="store_true", default=False,
@@ -170,8 +181,8 @@ Examples:
                         help="Number of workers the master should wait for (required with --master)")
     parser.add_argument("--bind", default="0.0.0.0", metavar="HOST",
                         help="Master bind address (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=9220, metavar="PORT",
-                        help="Master/worker port (default: 9220)")
+    parser.add_argument("--port", type=int, default=DEFAULT_MASTER_PORT, metavar="PORT",
+                        help=f"Master/worker port (default: {DEFAULT_MASTER_PORT})")
     parser.add_argument("--worker", default=None, metavar="HOST:PORT",
                         help="Run as worker node, connecting to master at HOST:PORT")
     return parser
@@ -231,7 +242,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
 
     duration = args.duration
     if args.users is None and args.num_requests is None and duration is None:
-        duration = 10.0  # default
+        duration = DEFAULT_DURATION
 
     # Body from file or string
     body = None
@@ -328,7 +339,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
     return config, args
 
 
-def _determine_and_run_mode(config, args):
+def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -> None:
     """Determine which mode to run and execute."""
     if args.url_file is not None:
         url_entries = load_url_file(args.url_file)
@@ -367,7 +378,8 @@ def _determine_and_run_mode(config, args):
         sys.exit(exit_code)
 
 
-def main():
+def main() -> None:
+    """CLI entry point for pywrkr."""
     parser = _build_parser()
     args = parser.parse_args()
     config, args = _parse_and_validate_args(parser, args)
