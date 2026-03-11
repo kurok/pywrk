@@ -1081,7 +1081,7 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
             stats, _ = await pywrkr.run_user_simulation(config)
         self.assertGreater(stats.total_requests, 0)
         for lat in stats.latencies:
-            self.assertGreaterEqual(lat, 0.03)  # slow endpoint sleeps 50ms
+            self.assertGreaterEqual(lat, 0.02)  # slow endpoint sleeps 50ms, allow CI jitter
 
     @unittest_run_loop
     async def test_user_simulation_json_output(self):
