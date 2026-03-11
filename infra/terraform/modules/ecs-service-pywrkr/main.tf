@@ -199,21 +199,20 @@ locals {
     var.scenario_file == "" ? [var.target_url] : [],
   )
 
-  # Shell wrapper: run pywrkr with --json, then dump JSON to stdout with markers
-  # so Jenkins can extract it from CloudWatch logs
-  master_command = [
-    "sh", "-c",
-    join(" ", concat(
-      ["pywrkr"],
-      local.pywrkr_args,
-      ["--json", "/tmp/results.json", ";"],
-      ["EXIT_CODE=$?;"],
-      ["echo '---PYWRKR_JSON_START---';"],
-      ["cat /tmp/results.json;"],
-      ["echo '---PYWRKR_JSON_END---';"],
-      ["exit $EXIT_CODE"],
-    ))
-  ]
+  # Shell script: run pywrkr with --json, then dump JSON to stdout with markers
+  # so Jenkins can extract it from CloudWatch logs.
+  # entryPoint is set to ["sh","-c"] to override the image ENTRYPOINT ["pywrkr"].
+  # command is the shell script as a single string.
+  master_shell_script = join(" ", concat(
+    ["pywrkr"],
+    local.pywrkr_args,
+    ["--json", "/tmp/results.json", ";"],
+    ["EXIT_CODE=$?;"],
+    ["echo '---PYWRKR_JSON_START---';"],
+    ["cat /tmp/results.json;"],
+    ["echo '---PYWRKR_JSON_END---';"],
+    ["exit $EXIT_CODE"],
+  ))
 
   # Worker command: connect to master via Cloud Map DNS
   worker_command = [
@@ -237,8 +236,8 @@ resource "aws_ecs_task_definition" "master" {
     name       = "pywrkr-master"
     image      = local.image
     essential  = true
-    entryPoint = []
-    command    = local.master_command
+    entryPoint = ["sh", "-c"]
+    command    = [local.master_shell_script]
 
     portMappings = [{
       containerPort = 9000
