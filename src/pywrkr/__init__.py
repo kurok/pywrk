@@ -210,4 +210,4 @@ from pywrkr.main import parse_header
 # Re-export main function under a different name to avoid shadowing pywrkr.main module
 from pywrkr.main import main as cli_main
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
