@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Wiki / Documentation
+    url: https://github.com/kurok/pywrkr/wiki
+    about: Check the wiki for usage guides and examples
+  - name: Security Vulnerability
+    url: https://github.com/kurok/pywrkr/security/advisories/new
+    about: Report security vulnerabilities privately
