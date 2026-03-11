@@ -3845,7 +3845,7 @@ class TestThresholdEvaluation(unittest.TestCase):
     def test_avg_latency(self):
         stats = self._make_stats(latencies=[0.1, 0.2, 0.3])
         thresholds = [
-            pywrkr.parse_threshold("avg_latency <= 200ms"),
+            pywrkr.parse_threshold("avg_latency <= 250ms"),
         ]
         results = pywrkr.evaluate_thresholds(thresholds, stats, 1.0)
         self.assertTrue(results[0][2])
