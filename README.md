@@ -129,6 +129,8 @@ usage: pywrkr.py [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--rate` | Target requests per second (constant rate mode) |
 | | `--rate-ramp` | Linearly ramp rate from `--rate` to this value over the duration |
 | | `--traffic-profile` | Traffic shaping profile: `sine`, `step`, `sawtooth`, `square`, `spike`, `business-hours`, or `csv:file.csv` |
+| | `--html-report` | Generate interactive Gatling-style HTML report to file |
+| | `--live` | Live TUI dashboard during benchmark (requires `pywrkr[tui]`) |
 | | `--scenario` | Path to JSON/YAML scenario file for scripted multi-step requests |
 | | `--latency-breakdown` | Show detailed per-phase latency breakdown (DNS, TCP, TLS, TTFB, transfer) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
@@ -518,6 +520,50 @@ python pywrkr.py --tag environment=production --tag build=v2.1.0 \
     --json results.json -c 100 -d 30 http://localhost:8080/
 ```
 
+### Multi-URL Mode
+
+Test multiple endpoints in a single benchmark run using a URL file:
+
+```bash
+# Create a URL file (one URL per line)
+cat urls.txt
+http://localhost:8080/api/users
+http://localhost:8080/api/products
+http://localhost:8080/api/orders
+
+# Run benchmark against all URLs
+python pywrkr.py --url-file urls.txt -c 50 -d 30
+```
+
+| Flag | Description |
+|------|-------------|
+| `--url-file` | Path to file containing URLs to test (one per line) |
+
+Requests are distributed across all URLs. Results include per-URL breakdowns alongside aggregate statistics.
+
+### Distributed Mode
+
+Scale benchmarks across multiple machines by running one master and multiple workers:
+
+```bash
+# On the master node: coordinate 3 workers
+python pywrkr.py --master --expect-workers 3 --bind 0.0.0.0 --port 9000 \
+    -c 300 -d 60 http://target:8080/
+
+# On each worker node: connect back to the master
+python pywrkr.py --worker --bind master-host --port 9000
+```
+
+| Flag | Description |
+|------|-------------|
+| `--master` | Run as distributed master (coordinates workers) |
+| `--worker` | Run as distributed worker (connects to master) |
+| `--expect-workers` | Number of workers the master should wait for before starting |
+| `--bind` | Address to bind/connect (default: `0.0.0.0` for master, master host for worker) |
+| `--port` | Port for master/worker communication (default: `9000`) |
+
+The master splits the workload evenly across workers, collects results, and produces a single aggregated report.
+
 ## Installation
 
 ```bash
@@ -538,12 +584,12 @@ pip install pywrkr[all]
 
 ```bash
 # Run all tests
-python -m pytest test_pywrkr.py -v
+python -m pytest tests/test_pywrkr.py -v
 
 # Run specific test class
-python -m pytest test_pywrkr.py::TestMakeUrl -v
-python -m pytest test_pywrkr.py::TestBenchmarkIntegration -v
-python -m pytest test_pywrkr.py::TestAutofindIntegration -v
+python -m pytest tests/test_pywrkr.py::TestMakeUrl -v
+python -m pytest tests/test_pywrkr.py::TestBenchmarkIntegration -v
+python -m pytest tests/test_pywrkr.py::TestAutofindIntegration -v
 ```
 
 The test suite includes unit and integration tests covering:

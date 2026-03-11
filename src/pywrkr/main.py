@@ -44,34 +44,8 @@ def parse_header(s: str) -> tuple[str, str]:
     return name.strip(), value.strip()
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Create and configure the argument parser."""
-    parser = argparse.ArgumentParser(
-        description="pywrkr - HTTP benchmarking tool with extended statistics (wrk + ab features)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Duration mode (wrk-style):
-  %(prog)s http://localhost:8080/
-  %(prog)s -c 200 -d 30 http://localhost:8080/api
-
-  # Request-count mode (ab-style):
-  %(prog)s -n 1000 -c 50 http://localhost:8080/
-
-  # POST with auth, cookies, and JSON output:
-  %(prog)s -n 500 -c 20 -m POST -b '{"key":"val"}' \\
-      -H "Content-Type: application/json" \\
-      -A user:pass -C "session=abc123" \\
-      --json results.json http://localhost:8080/api
-
-  # User simulation: 1500 users, 5 min, 30s ramp-up, 1s think time:
-  %(prog)s -u 1500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
-
-  # Cache-busting: append random query param to bypass HTTP caches:
-  %(prog)s -R -c 100 -d 10 http://localhost:8080/
-  %(prog)s -R -u 300 -d 300 --think-time 1.0 https://example.com/
-        """,
-    )
+def _add_core_options(parser: argparse.ArgumentParser) -> None:
+    """Add core HTTP and connection options to the parser."""
     parser.add_argument("url", nargs="?", default=None, help="Target URL to benchmark")
     parser.add_argument("-c", "--connections", type=int, default=DEFAULT_CONNECTIONS,
                         help=f"Number of concurrent connections (default: {DEFAULT_CONNECTIONS})")
@@ -104,6 +78,13 @@ Examples:
                         help="Verbosity level: 2=warnings, 3=status codes, 4=headers+body info")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help=f"Request timeout in seconds (default: {DEFAULT_TIMEOUT})")
+    parser.add_argument("-R", "--random-param", action="store_true", default=False,
+                        help="Append a unique random query parameter (_cb=<uuid>) to each request "
+                             "URL to bypass HTTP caching")
+
+
+def _add_output_options(parser: argparse.ArgumentParser) -> None:
+    """Add output format and reporting options to the parser."""
     parser.add_argument("-e", "--csv", default=None, metavar="FILE",
                         help="Write CSV percentile table to FILE (ab-style)")
     parser.add_argument("-w", "--html", action="store_true", default=False,
@@ -112,7 +93,25 @@ Examples:
                         help="Write JSON results to FILE")
     parser.add_argument("--html-report", default=None, metavar="FILE",
                         help="Generate interactive Gatling-style HTML report to FILE")
-    # User simulation mode
+    parser.add_argument("--live", action="store_true", default=False,
+                        help="Show a live TUI dashboard during the benchmark "
+                             "(requires rich: pip install pywrkr[tui])")
+    parser.add_argument("--latency-breakdown", action="store_true", default=False,
+                        help="Show detailed latency breakdown per phase "
+                             "(DNS, TCP connect, TLS, TTFB, transfer)")
+    parser.add_argument("--tag", action="append", default=[], dest="tags",
+                        help="Metadata tag as key=value (repeatable, e.g. --tag environment=prod)")
+    parser.add_argument("--otel-endpoint", default=None, metavar="URL",
+                        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP")
+    parser.add_argument("--prom-remote-write", default=None, metavar="URL",
+                        help="Push metrics to a Prometheus Pushgateway-compatible endpoint")
+    parser.add_argument("--threshold", "--th", action="append", default=[], dest="thresholds",
+                        help="SLO threshold expression (repeatable, e.g. --threshold 'p95 < 300ms'). "
+                             "Exit code 2 if any threshold is breached.")
+
+
+def _add_user_simulation_options(parser: argparse.ArgumentParser) -> None:
+    """Add user simulation mode options to the parser."""
     parser.add_argument("-u", "--users", type=int, default=None,
                         help="Number of virtual users (enables user simulation mode)")
     parser.add_argument("--ramp-up", type=float, default=0,
@@ -121,10 +120,10 @@ Examples:
                         help="Mean think time in seconds between requests per user (default: 1.0)")
     parser.add_argument("--think-jitter", type=float, default=0.5,
                         help="Think time jitter factor 0-1 (default: 0.5, e.g. 1s +/-50%%)")
-    parser.add_argument("-R", "--random-param", action="store_true", default=False,
-                        help="Append a unique random query parameter (_cb=<uuid>) to each request "
-                             "URL to bypass HTTP caching")
-    # Rate limiting mode
+
+
+def _add_rate_and_traffic_options(parser: argparse.ArgumentParser) -> None:
+    """Add rate limiting and traffic shaping options to the parser."""
     parser.add_argument("--rate", type=float, default=None,
                         help="Target requests per second (constant rate mode)")
     parser.add_argument("--rate-ramp", type=float, default=None,
@@ -135,23 +134,12 @@ Examples:
                              "Parameters: 'sine:cycles=3,min=0.2', "
                              "'step:levels=100,500,1000', 'spike:interval=10,multiplier=5'. "
                              "Requires --rate (used as base/peak rate)")
-    # Scenario mode
     parser.add_argument("--scenario", default=None, metavar="FILE",
                         help="Path to a JSON/YAML scenario file for scripted multi-step requests")
-    parser.add_argument("--live", action="store_true", default=False,
-                        help="Show a live TUI dashboard during the benchmark "
-                             "(requires rich: pip install pywrkr[tui])")
-    parser.add_argument("--latency-breakdown", action="store_true", default=False,
-                        help="Show detailed latency breakdown per phase "
-                             "(DNS, TCP connect, TLS, TTFB, transfer)")
-    # Observability export
-    parser.add_argument("--tag", action="append", default=[], dest="tags",
-                        help="Metadata tag as key=value (repeatable, e.g. --tag environment=prod)")
-    parser.add_argument("--otel-endpoint", default=None, metavar="URL",
-                        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP")
-    parser.add_argument("--prom-remote-write", default=None, metavar="URL",
-                        help="Push metrics to a Prometheus Pushgateway-compatible endpoint")
-    # Autofind mode
+
+
+def _add_autofind_options(parser: argparse.ArgumentParser) -> None:
+    """Add autofind capacity-testing options to the parser."""
     parser.add_argument("--autofind", action="store_true", default=False,
                         help="Auto-ramp load to find maximum sustainable capacity")
     parser.add_argument("--max-error-rate", type=float, default=1.0,
@@ -166,15 +154,13 @@ Examples:
                         help="Autofind: maximum users to try (default: 10000)")
     parser.add_argument("--step-multiplier", type=float, default=2.0,
                         help="Autofind: multiply users by this each step (default: 2.0)")
-    # SLO Thresholds
-    parser.add_argument("--threshold", "--th", action="append", default=[], dest="thresholds",
-                        help="SLO threshold expression (repeatable, e.g. --threshold 'p95 < 300ms'). "
-                             "Exit code 2 if any threshold is breached.")
-    # Multi-URL mode
+
+
+def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
+    """Add distributed mode and multi-URL options to the parser."""
     parser.add_argument("--url-file", default=None, metavar="FILE",
                         help="File with URLs to benchmark (one per line, optional METHOD prefix). "
                              "Runs each URL sequentially with the same settings and prints a comparison.")
-    # Distributed mode
     parser.add_argument("--master", action="store_true", default=False,
                         help="Run as master node in distributed mode")
     parser.add_argument("--expect-workers", type=int, default=None, metavar="N",
@@ -185,12 +171,57 @@ Examples:
                         help=f"Master/worker port (default: {DEFAULT_MASTER_PORT})")
     parser.add_argument("--worker", default=None, metavar="HOST:PORT",
                         help="Run as worker node, connecting to master at HOST:PORT")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser."""
+    parser = argparse.ArgumentParser(
+        description="pywrkr - HTTP benchmarking tool with extended statistics (wrk + ab features)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Duration mode (wrk-style):
+  %(prog)s http://localhost:8080/
+  %(prog)s -c 200 -d 30 http://localhost:8080/api
+
+  # Request-count mode (ab-style):
+  %(prog)s -n 1000 -c 50 http://localhost:8080/
+
+  # POST with auth, cookies, and JSON output:
+  %(prog)s -n 500 -c 20 -m POST -b '{"key":"val"}' \\
+      -H "Content-Type: application/json" \\
+      -A user:pass -C "session=abc123" \\
+      --json results.json http://localhost:8080/api
+
+  # User simulation: 1500 users, 5 min, 30s ramp-up, 1s think time:
+  %(prog)s -u 1500 -d 300 --ramp-up 30 --think-time 1.0 http://localhost:8080/
+
+  # Cache-busting: append random query param to bypass HTTP caches:
+  %(prog)s -R -c 100 -d 10 http://localhost:8080/
+  %(prog)s -R -u 300 -d 300 --think-time 1.0 https://example.com/
+        """,
+    )
+    _add_core_options(parser)
+    _add_output_options(parser)
+    _add_user_simulation_options(parser)
+    _add_rate_and_traffic_options(parser)
+    _add_autofind_options(parser)
+    _add_distributed_options(parser)
     return parser
 
 
-def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Namespace]:
-    """Parse arguments and return validated config with the raw args namespace."""
-    # --- Worker mode: connect to master, no URL needed ---
+def _parse_and_validate_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> tuple[BenchmarkConfig, argparse.Namespace]:
+    """Validate parsed CLI arguments and build a BenchmarkConfig.
+
+    Handles early-exit modes (worker), validates mutually exclusive options,
+    resolves defaults, and constructs the config object. Returns both the
+    config and the raw namespace (needed by _determine_and_run_mode for
+    mode-specific fields like autofind thresholds and distributed bind/port).
+    """
+    # --- Early exit: worker mode connects to a master and needs no URL ---
     if args.worker is not None:
         if ":" not in args.worker:
             parser.error("--worker requires HOST:PORT format (e.g. --worker 192.168.1.1:9220)")
@@ -202,25 +233,26 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         asyncio.run(run_worker_node(host, w_port))
         sys.exit(0)
 
-    # --- Multi-URL mode: --url-file does not require positional url ---
+    # --- Multi-URL mode: URLs come from a file, positional url is optional ---
     if args.url_file is not None:
         try:
             url_entries = load_url_file(args.url_file)
         except (FileNotFoundError, ValueError) as e:
             parser.error(str(e))
+        # Validate every URL in the file has a supported scheme
         for entry in url_entries:
             p = urlparse(entry.url)
             if p.scheme not in ("http", "https"):
                 parser.error(f"Invalid URL scheme in url-file: {entry.url}")
 
-    # --- Master mode: requires URL and --expect-workers ---
+    # --- Master mode needs both a URL and a worker count ---
     if args.master:
         if args.expect_workers is None or args.expect_workers < 1:
             parser.error("--master requires --expect-workers N (N >= 1)")
         if args.url is None:
             parser.error("--master requires a target URL")
 
-    # URL is required for all non-worker, non-url-file modes
+    # --- URL is required for all remaining modes ---
     if args.url is None and args.url_file is None:
         parser.error("the following arguments are required: url (or --url-file)")
 
@@ -229,10 +261,13 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         if parsed.scheme not in ("http", "https"):
             parser.error(f"Invalid URL scheme: {parsed.scheme}. Use http:// or https://")
 
-    # Determine mode
+    # --- Validate mutually exclusive mode options ---
+    # Three modes: autofind (manages its own load), user simulation (-u),
+    # and standard benchmark (-n or -d). Only one may be active.
     if args.autofind:
-        pass
+        pass  # autofind manages users/duration internally
     elif args.users is not None:
+        # User simulation requires duration, not request count
         if args.num_requests is not None:
             parser.error("Cannot use -n with -u (user simulation). Use -d for duration.")
         if args.duration is None:
@@ -240,11 +275,12 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
     elif args.num_requests is not None and args.duration is not None:
         parser.error("Cannot use both -n (request count) and -d (duration). Pick one.")
 
+    # Fall back to default duration when no load parameter is specified
     duration = args.duration
     if args.users is None and args.num_requests is None and duration is None:
         duration = DEFAULT_DURATION
 
-    # Body from file or string
+    # --- Resolve request body: file takes precedence over inline string ---
     body = None
     if args.post_file:
         if not os.path.isfile(args.post_file):
@@ -254,7 +290,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
     elif args.body:
         body = args.body.encode()
 
-    # Load scenario if specified
+    # --- Load scenario file (JSON or YAML) if provided ---
     scenario = None
     if hasattr(args, 'scenario') and args.scenario:
         scenario = load_scenario(args.scenario)
@@ -262,7 +298,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
     headers = dict(args.headers)
     keepalive = not args.no_keepalive
 
-    # Parse --tag key=value pairs
+    # --- Parse structured CLI values that need validation ---
     tags: dict[str, str] = {}
     for tag_str in args.tags:
         if "=" not in tag_str:
@@ -270,7 +306,6 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         key, value = tag_str.split("=", 1)
         tags[key.strip()] = value.strip()
 
-    # Parse --threshold expressions
     thresholds: list[Threshold] = []
     for expr in args.thresholds:
         try:
@@ -278,6 +313,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         except ValueError as e:
             parser.error(str(e))
 
+    # --- Build config; traffic_profile is set after cross-field validation ---
     config = BenchmarkConfig(
         url=args.url or "",
         connections=args.connections,
@@ -305,7 +341,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         live_dashboard=args.live,
         rate=args.rate,
         rate_ramp=args.rate_ramp,
-        traffic_profile=None,  # parsed below after validation
+        traffic_profile=None,
         scenario=scenario,
         latency_breakdown=args.latency_breakdown,
         tags=tags,
@@ -314,13 +350,14 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         thresholds=thresholds,
     )
 
-    # Validate rate options
+    # --- Cross-field validation for rate limiting options ---
     if config.rate_ramp is not None and config.rate is None:
         parser.error("--rate-ramp requires --rate")
     if config.rate_ramp is not None and config.duration is None:
         parser.error("--rate-ramp requires -d (duration)")
 
-    # Parse and validate traffic profile
+    # Traffic profile requires --rate as the base/peak rate and conflicts
+    # with --rate-ramp (they are alternative ways to shape load over time)
     if args.traffic_profile is not None:
         if config.rate is None:
             parser.error("--traffic-profile requires --rate (used as base/peak rate)")
@@ -333,6 +370,7 @@ def _parse_and_validate_args(parser, args) -> tuple[BenchmarkConfig, argparse.Na
         except (ValueError, FileNotFoundError, OSError) as e:
             parser.error(f"Invalid --traffic-profile: {e}")
 
+    # Scenario mode defaults to 10s if no duration/count is specified
     if config.scenario and config.users is None and config.duration is None and config.num_requests is None:
         config.duration = 10.0
 
