@@ -47,3 +47,8 @@ output "vpc_id" {
   description = "VPC ID"
   value       = module.network.vpc_id
 }
+
+output "reports_bucket" {
+  description = "S3 bucket for HTML reports and JSON results"
+  value       = module.ecs_service_pywrkr.reports_bucket
+}

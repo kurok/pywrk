@@ -226,6 +226,7 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         csv_output=config.csv_output,
         json_output=config.json_output,
         html_output=config.html_output,
+        html_report=config.html_report,
         tags=config.tags,
         otel_endpoint=config.otel_endpoint,
         prom_remote_write=config.prom_remote_write,

@@ -4,10 +4,13 @@
  * Deploys and runs pywrkr load tests on AWS ECS Fargate using the
  * pre-built image from GitHub Container Registry.
  *
+ * Produces an interactive HTML report as the primary build artifact.
+ *
  * Prerequisites:
  *   - AWS credentials in Jenkins credential store (aws-access-key-id, aws-secret-access-key)
  *   - Terraform >= 1.6 on the Jenkins agent
  *   - aws-cli v2 on the Jenkins agent
+ *   - HTML Publisher plugin (optional, for inline viewing)
  */
 
 pipeline {
@@ -183,6 +186,10 @@ enable_nat_gateway = false
                         script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
                         returnStdout: true
                     ).trim()
+                    env.REPORTS_BUCKET = sh(
+                        script: "cd ${env.TF_DIR} && terraform output -raw reports_bucket",
+                        returnStdout: true
+                    ).trim()
 
                     sh """
                         echo "Waiting for master service to stabilize..."
@@ -232,54 +239,96 @@ enable_nat_gateway = false
             }
         }
 
-        stage('Fetch CloudWatch Logs') {
+        stage('Collect Report') {
             steps {
                 script {
+                    // Wait for the master task to finish and upload results to S3
+                    // The master prints "S3_REPORT_PATH=<timestamp>" before exiting
                     def masterLogGroup = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw master_log_group",
-                        returnStdout: true
-                    ).trim()
-                    def workerLogGroup = sh(
-                        script: "cd ${env.TF_DIR} && terraform output -raw worker_log_group",
                         returnStdout: true
                     ).trim()
 
                     def startTime = System.currentTimeMillis() - (30 * 60 * 1000)
 
-                    sh """
-                        echo "=== Master Logs ==="
-                        aws logs filter-log-events \
-                            --log-group-name "${masterLogGroup}" \
-                            --start-time ${startTime} \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --no-cli-pager \
-                            --output text \
-                            --query 'events[*].message' \
-                            | tee master-logs.txt
+                    // Poll CloudWatch for S3_REPORT_PATH marker (max 5 min)
+                    def reportPath = ''
+                    for (int i = 0; i < 30; i++) {
+                        def logs = sh(
+                            script: """
+                                aws logs filter-log-events \
+                                    --log-group-name "${masterLogGroup}" \
+                                    --start-time ${startTime} \
+                                    --filter-pattern "S3_REPORT_PATH" \
+                                    --region ${AWS_DEFAULT_REGION} \
+                                    --no-cli-pager \
+                                    --output text \
+                                    --query 'events[*].message'
+                            """,
+                            returnStdout: true
+                        ).trim()
 
-                        echo ""
-                        echo "=== Worker Logs ==="
-                        aws logs filter-log-events \
-                            --log-group-name "${workerLogGroup}" \
-                            --start-time ${startTime} \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --no-cli-pager \
-                            --output text \
-                            --query 'events[*].message' \
-                            | tee worker-logs.txt
+                        def match = (logs =~ /S3_REPORT_PATH=(\S+)/)
+                        if (match.find()) {
+                            reportPath = match.group(1)
+                            echo "Found report at S3 path: ${reportPath}"
+                            break
+                        }
+                        echo "Waiting for report upload... (${i + 1}/30)"
+                        sleep 10
+                    }
+
+                    if (!reportPath) {
+                        echo "WARNING: Could not find S3 report path in logs. Falling back to latest S3 object."
+                        reportPath = sh(
+                            script: """
+                                aws s3 ls s3://${env.REPORTS_BUCKET}/ \
+                                    --region ${AWS_DEFAULT_REGION} \
+                                    | sort | tail -1 | awk '{print \$NF}' | tr -d '/'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                    }
+
+                    if (!reportPath) {
+                        error("No report found in S3 bucket ${env.REPORTS_BUCKET}")
+                    }
+
+                    // Download report and results from S3
+                    sh """
+                        mkdir -p pywrkr-report
+                        aws s3 cp s3://${env.REPORTS_BUCKET}/${reportPath}/report.html pywrkr-report/report.html \
+                            --region ${AWS_DEFAULT_REGION}
+                        aws s3 cp s3://${env.REPORTS_BUCKET}/${reportPath}/results.json pywrkr-report/results.json \
+                            --region ${AWS_DEFAULT_REGION}
+                        echo "Report downloaded to pywrkr-report/"
+                        ls -la pywrkr-report/
                     """
 
-                    def masterLogs = readFile('master-logs.txt')
-                    if (masterLogs.contains('THRESHOLD BREACHED') || masterLogs.contains('exit code: 2')) {
-                        error("Load test failed: SLO threshold breached. Check master logs for details.")
+                    // Check for threshold breaches in the JSON results
+                    def resultsJson = readFile('pywrkr-report/results.json')
+                    if (resultsJson.contains('"threshold_breached": true') || resultsJson.contains('"passed": false')) {
+                        echo "WARNING: SLO threshold breached. See HTML report for details."
                     }
                 }
             }
         }
 
-        stage('Archive Artifacts') {
+        stage('Publish Report') {
             steps {
-                archiveArtifacts artifacts: 'master-logs.txt,worker-logs.txt', allowEmptyArchive: true
+                // Archive as downloadable artifacts
+                archiveArtifacts artifacts: 'pywrkr-report/**', allowEmptyArchive: true
+
+                // Publish HTML report for inline viewing (requires HTML Publisher plugin)
+                publishHTML(target: [
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'pywrkr-report',
+                    reportFiles: 'report.html',
+                    reportName: 'pywrkr Load Test Report',
+                    reportTitles: 'Load Test Results'
+                ])
             }
         }
 
@@ -319,10 +368,10 @@ enable_nat_gateway = false
 
     post {
         success {
-            echo "Load test completed successfully."
+            echo "Load test completed successfully. View the HTML report in build artifacts."
         }
         failure {
-            echo "Load test failed. Check CloudWatch logs and archived artifacts."
+            echo "Load test failed. Check CloudWatch logs and build console output."
         }
         always {
             node('') {

@@ -64,6 +64,15 @@ resource "aws_iam_role_policy" "task" {
         ]
         Resource = "*"
       },
+      {
+        Sid    = "S3Reports"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+        ]
+        Resource = "arn:aws:s3:::${var.name_prefix}-reports/*"
+      },
     ]
   })
 }

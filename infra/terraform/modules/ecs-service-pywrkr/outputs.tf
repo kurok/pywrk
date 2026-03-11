@@ -25,3 +25,7 @@ output "master_task_definition_arn" {
 output "worker_task_definition_arn" {
   value = aws_ecs_task_definition.worker.arn
 }
+
+output "reports_bucket" {
+  value = aws_s3_bucket.reports.bucket
+}

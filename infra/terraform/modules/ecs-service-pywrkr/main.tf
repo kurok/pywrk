@@ -1,4 +1,28 @@
 ###############################################################################
+# S3 Bucket — stores HTML reports and JSON results
+###############################################################################
+
+resource "aws_s3_bucket" "reports" {
+  bucket        = "${var.name_prefix}-reports"
+  force_destroy = true
+
+  tags = { Name = "${var.name_prefix}-reports" }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "reports" {
+  bucket = aws_s3_bucket.reports.id
+
+  rule {
+    id     = "expire-old-reports"
+    status = "Enabled"
+
+    expiration {
+      days = 30
+    }
+  }
+}
+
+###############################################################################
 # Cloud Map — private DNS so workers can discover master
 ###############################################################################
 
@@ -184,8 +208,8 @@ locals {
     "--prom-remote-write", var.prom_remote_write,
   ] : []
 
-  # Final command: base + mode + options + URL (URL must be last positional arg)
-  master_command = concat(
+  # Final pywrkr command args (without report flags — those go in the shell wrapper)
+  pywrkr_args = concat(
     local.master_base_cmd,
     local.master_duration_cmd,
     local.master_connections_cmd,
@@ -198,6 +222,27 @@ locals {
     local.master_url_cmd,
     var.scenario_file == "" ? [var.target_url] : [],
   )
+
+  # S3 path for reports: s3://<bucket>/<timestamp>/
+  reports_bucket = aws_s3_bucket.reports.bucket
+
+  # Shell wrapper: install awscli, run pywrkr with report flags, upload to S3
+  master_command = [
+    "sh", "-c",
+    join(" ", concat(
+      ["pip install -q awscli &&"],
+      ["TIMESTAMP=$(date +%Y%m%d-%H%M%S) &&"],
+      ["pywrkr"],
+      local.pywrkr_args,
+      ["--html-report", "/tmp/report.html"],
+      ["--json", "/tmp/results.json", ";"],
+      ["EXIT_CODE=$? &&"],
+      ["aws s3 cp /tmp/report.html s3://${local.reports_bucket}/$TIMESTAMP/report.html &&"],
+      ["aws s3 cp /tmp/results.json s3://${local.reports_bucket}/$TIMESTAMP/results.json &&"],
+      ["echo \"S3_REPORT_PATH=$TIMESTAMP\" &&"],
+      ["exit $EXIT_CODE"],
+    ))
+  ]
 
   # Worker command: connect to master via Cloud Map DNS
   worker_command = [
@@ -218,10 +263,11 @@ resource "aws_ecs_task_definition" "master" {
   task_role_arn            = var.task_role_arn
 
   container_definitions = jsonencode([{
-    name      = "pywrkr-master"
-    image     = local.image
-    essential = true
-    command   = local.master_command
+    name       = "pywrkr-master"
+    image      = local.image
+    essential  = true
+    entryPoint = []
+    command    = local.master_command
 
     portMappings = [{
       containerPort = 9000
@@ -230,6 +276,7 @@ resource "aws_ecs_task_definition" "master" {
 
     environment = concat(
       [{ name = "PYWRKR_ROLE", value = "master" }],
+      [{ name = "REPORTS_BUCKET", value = local.reports_bucket }],
       var.otel_endpoint != "" ? [{ name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint }] : [],
       var.prom_remote_write != "" ? [{ name = "PYWRKR_PROM_ENDPOINT", value = var.prom_remote_write }] : [],
     )
