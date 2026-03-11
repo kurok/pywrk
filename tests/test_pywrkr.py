@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for pywrkr benchmarking tool."""
 
+import argparse
 import asyncio
 import base64
 import csv
@@ -21,6 +22,108 @@ from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
 import pywrkr
 import pywrkr as pywrkr_main
 from pywrkr.main import main as pywrkr_cli_main
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for refactored argument parser helpers
+# ---------------------------------------------------------------------------
+
+
+class TestParserHelpers(unittest.TestCase):
+    """Tests for the refactored argument parser helper functions."""
+
+    def test_build_parser_returns_parser(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        self.assertIsInstance(parser, argparse.ArgumentParser)
+
+    def test_core_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["http://example.com"])
+        # Core options should have defaults
+        self.assertEqual(args.connections, 10)
+        self.assertEqual(args.threads, 4)
+        self.assertEqual(args.timeout, 30)
+        self.assertEqual(args.method, "GET")
+        self.assertTrue(args.keepalive)
+
+    def test_user_simulation_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["-u", "100", "http://example.com"])
+        self.assertEqual(args.users, 100)
+        self.assertEqual(args.ramp_up, 0)
+        self.assertEqual(args.think_time, 1.0)
+        self.assertEqual(args.think_jitter, 0.5)
+
+    def test_output_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["--json", "out.json", "--csv", "out.csv", "http://example.com"])
+        self.assertEqual(args.json, "out.json")
+        self.assertEqual(args.csv, "out.csv")
+
+    def test_rate_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["--rate", "500", "--rate-ramp", "1000", "http://example.com"])
+        self.assertEqual(args.rate, 500)
+        self.assertEqual(args.rate_ramp, 1000)
+
+    def test_autofind_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["--autofind", "--max-error-rate", "2.0", "http://example.com"])
+        self.assertTrue(args.autofind)
+        self.assertEqual(args.max_error_rate, 2.0)
+
+    def test_distributed_options_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["--master", "--expect-workers", "3", "--port", "5000", "http://example.com"])
+        self.assertTrue(args.master)
+        self.assertEqual(args.expect_workers, 3)
+        self.assertEqual(args.port, 5000)
+
+    def test_multi_url_option_present(self):
+        from pywrkr.main import _build_parser
+        parser = _build_parser()
+        args = parser.parse_args(["--url-file", "urls.txt"])
+        self.assertEqual(args.url_file, "urls.txt")
+
+
+class TestDefaultConstants(unittest.TestCase):
+    """Tests for default constants in config module."""
+
+    def test_constants_exist_and_match_defaults(self):
+        from pywrkr.config import (
+            DEFAULT_CONNECTIONS, DEFAULT_DURATION, DEFAULT_THREADS,
+            DEFAULT_TIMEOUT, DEFAULT_THINK_TIME_JITTER, DEFAULT_MASTER_PORT,
+        )
+        self.assertEqual(DEFAULT_CONNECTIONS, 10)
+        self.assertEqual(DEFAULT_DURATION, 10.0)
+        self.assertEqual(DEFAULT_THREADS, 4)
+        self.assertEqual(DEFAULT_TIMEOUT, 30.0)
+        self.assertEqual(DEFAULT_THINK_TIME_JITTER, 0.5)
+        self.assertEqual(DEFAULT_MASTER_PORT, 9220)
+
+    def test_benchmark_config_uses_constants(self):
+        from pywrkr.config import BenchmarkConfig, DEFAULT_CONNECTIONS, DEFAULT_THREADS, DEFAULT_TIMEOUT
+        config = BenchmarkConfig(url="http://example.com")
+        self.assertEqual(config.connections, DEFAULT_CONNECTIONS)
+        self.assertEqual(config.threads, DEFAULT_THREADS)
+        self.assertEqual(config.timeout_sec, DEFAULT_TIMEOUT)
+
+    def test_autofind_config_uses_constants(self):
+        from pywrkr.config import (
+            AutofindConfig, DEFAULT_AUTOFIND_MAX_ERROR_RATE,
+            DEFAULT_AUTOFIND_START_USERS, DEFAULT_AUTOFIND_MAX_USERS,
+        )
+        config = AutofindConfig(url="http://example.com")
+        self.assertEqual(config.max_error_rate, DEFAULT_AUTOFIND_MAX_ERROR_RATE)
+        self.assertEqual(config.start_users, DEFAULT_AUTOFIND_START_USERS)
+        self.assertEqual(config.max_users, DEFAULT_AUTOFIND_MAX_USERS)
 
 
 # ---------------------------------------------------------------------------

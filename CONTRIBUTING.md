@@ -28,11 +28,17 @@ pytest
 ```
 pywrkr/
   src/pywrkr/
-    __init__.py       # Public API and version
-    main.py           # All implementation code
+    __init__.py            # Public API, __all__ list, and version
+    main.py                # CLI entry point and argument parsing
+    config.py              # Data structures, default constants, scenario loading
+    workers.py             # Worker coroutines and benchmark runners
+    reporting.py           # Output formatting, metrics export, HTML reports
+    traffic_profiles.py    # Traffic shaping profiles and rate limiter
+    distributed.py         # Distributed master/worker mode
+    multi_url.py           # Multi-URL sequential testing mode
   tests/
-    test_pywrkr.py    # Unit and integration tests
-  .github/workflows/  # CI/CD pipelines
+    test_pywrkr.py         # Unit and integration tests (~300 tests)
+  .github/workflows/       # CI/CD pipelines
 ```
 
 ## How to Contribute
@@ -85,8 +91,13 @@ pywrkr/
 
 ### Commit Messages
 
-- Use clear, descriptive commit messages
-- Start with a verb: "Add ...", "Fix ...", "Update ..."
+- Use [Conventional Commits](https://www.conventionalcommits.org/) format: `type: description`
+- Common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`
+- Examples:
+  - `feat: add YAML output support`
+  - `fix: handle timeout in worker mode`
+  - `refactor: split parser into helpers`
+- Semver mapping: `feat` -> MINOR, `fix` -> PATCH, breaking (`!`) -> MAJOR
 - Keep the first line under 72 characters
 
 ### Pull Requests
