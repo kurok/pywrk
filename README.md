@@ -9,6 +9,7 @@ A Python HTTP benchmarking tool inspired by [wrk](https://github.com/wg/wrk) and
   - **Request-count mode** (`-n`): ab-style, send exactly N requests
   - **User simulation mode** (`-u`): simulate virtual users with ramp-up and think time
   - **Rate limiting mode** (`--rate`): send requests at a controlled, constant rate (with optional ramp)
+  - **Traffic profiles** (`--traffic-profile`): realistic traffic shaping — sine waves, spikes, step functions, business-hour curves, and CSV replay
   - **Autofind mode** (`--autofind`): automatically ramp load to find maximum sustainable capacity
 - **Detailed latency statistics:** min/max/mean/median/stdev, percentiles (p50-p99.99), histogram, and ab-style "percentage served within" table
 - **Throughput timeline:** requests/sec over time in ASCII bar chart
@@ -54,6 +55,15 @@ python pywrkr.py --rate 500 -d 30 http://localhost:8080/
 # Rate ramp: linearly increase from 100 to 1000 req/s over 60 seconds
 python pywrkr.py --rate 100 --rate-ramp 1000 -d 60 http://localhost:8080/
 
+# Traffic profiles: sine wave oscillating up to 500 req/s
+python pywrkr.py --rate 500 -d 120 --traffic-profile sine http://localhost:8080/
+
+# Traffic profiles: periodic spikes at 5x baseline
+python pywrkr.py --rate 200 -d 60 --traffic-profile "spike:interval=10,multiplier=5" http://localhost:8080/
+
+# Traffic profiles: replay production traffic from CSV
+python pywrkr.py --rate 1000 -d 300 --traffic-profile "csv:traffic.csv" http://localhost:8080/
+
 # Autofind: automatically find max sustainable load
 python pywrkr.py --autofind --max-error-rate 1 --max-p95 5.0 http://localhost:8080/
 
@@ -88,6 +98,7 @@ usage: pywrkr.py [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
                 [-e FILE] [-w] [--json FILE] [-u USERS] [--ramp-up RAMP_UP]
                 [--think-time THINK_TIME] [--think-jitter THINK_JITTER]
                 [-R] [--rate RATE] [--rate-ramp RATE_RAMP]
+                [--traffic-profile PROFILE]
                 url
 ```
 
@@ -117,6 +128,7 @@ usage: pywrkr.py [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | `-R` | `--random-param` | Append unique `_cb=<uuid>` query param per request (cache-buster) |
 | | `--rate` | Target requests per second (constant rate mode) |
 | | `--rate-ramp` | Linearly ramp rate from `--rate` to this value over the duration |
+| | `--traffic-profile` | Traffic shaping profile: `sine`, `step`, `sawtooth`, `square`, `spike`, `business-hours`, or `csv:file.csv` |
 | | `--scenario` | Path to JSON/YAML scenario file for scripted multi-step requests |
 | | `--latency-breakdown` | Show detailed per-phase latency breakdown (DNS, TCP, TLS, TTFB, transfer) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
@@ -280,8 +292,44 @@ At `--rate 500`, the tool sends one request every 2ms. If the server cannot keep
 | Default (no `--rate`) | Find maximum throughput; stress test |
 | `--rate N` | SLA validation; controlled load; latency-under-load testing |
 | `--rate N --rate-ramp M` | Find breaking point; gradual load increase |
+| `--rate N --traffic-profile P` | Realistic traffic patterns (sine, spikes, CSV replay) |
 
 Results include "Target RPS" vs "Actual RPS" and "Rate Limit Waits" count (how many times the limiter had to slow down a worker).
+
+### Traffic Profiles
+
+Shape your test traffic to match real-world patterns using `--traffic-profile`. Requires `--rate` (base/peak rate) and `-d` (duration).
+
+```bash
+# Sine wave: smooth oscillation up to 1000 req/s, 3 cycles
+python pywrkr.py --rate 1000 -d 120 --traffic-profile "sine:cycles=3,min=0.2" http://localhost:8080/
+
+# Step function: jump between discrete load levels
+python pywrkr.py --rate 1000 -d 90 --traffic-profile "step:levels=100,500,1000" http://localhost:8080/
+
+# Spike: baseline at 20% with 5x bursts every 10 seconds
+python pywrkr.py --rate 200 -d 60 --traffic-profile "spike:interval=10,multiplier=5" http://localhost:8080/
+
+# Business hours: 24h daily pattern compressed into test duration
+python pywrkr.py --rate 2000 -d 300 --traffic-profile business-hours http://localhost:8080/
+
+# CSV replay: replay real production traffic from a file
+python pywrkr.py --rate 1000 -d 300 --traffic-profile "csv:traffic.csv" http://localhost:8080/
+```
+
+**Built-in profiles:**
+
+| Profile | Pattern | Use case |
+|---------|---------|----------|
+| `sine` | Smooth wave | Gradual load changes, auto-scaling tests |
+| `step` | Discrete jumps | Testing specific load tiers |
+| `sawtooth` | Repeated ramps | Repeated warm-up behavior |
+| `square` | On/off toggle | Sudden load change recovery |
+| `spike` | Periodic bursts | Flash sale / viral event simulation |
+| `business-hours` | Day/night curve | Realistic daily traffic patterns |
+| `csv:file` | Custom curve | Replaying real production traffic |
+
+**CSV format:** Two columns — `time_sec,rate` (absolute RPS) or `time_sec,multiplier` (factor applied to `--rate`). Values are linearly interpolated between points.
 
 ### Latency Breakdown
 
