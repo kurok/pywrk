@@ -44,6 +44,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def format_bytes(n: float) -> str:
+    """Format byte count to human-readable string (B/KB/MB/GB/TB)."""
     for unit in ("B", "KB", "MB", "GB"):
         if abs(n) < 1024:
             return f"{n:.2f}{unit}"
@@ -52,6 +53,7 @@ def format_bytes(n: float) -> str:
 
 
 def format_duration(secs: float) -> str:
+    """Format seconds to human-readable duration string (us/ms/s)."""
     if secs < 0.001:
         return f"{secs * 1_000_000:.2f}us"
     if secs < 1:
@@ -63,7 +65,8 @@ def format_duration(secs: float) -> str:
 # Report printers
 # ---------------------------------------------------------------------------
 
-def print_latency_histogram(latencies: list[float], buckets: int = 20, file=sys.stdout):
+def print_latency_histogram(latencies: list[float], buckets: int = 20, file=sys.stdout) -> None:
+    """Print an ASCII histogram of latency distribution."""
     if not latencies:
         return
     mn, mx = min(latencies), max(latencies)
@@ -202,6 +205,7 @@ def _get_metric_value(
 
 
 def _compare(actual: float, operator: str, threshold: float) -> bool:
+    """Compare actual value against threshold using the given operator."""
     if operator == "<":
         return actual < threshold
     if operator == ">":
@@ -242,7 +246,8 @@ def print_threshold_results(
     print(f"\n  Thresholds: {summary}", file=file)
 
 
-def print_percentiles(latencies: list[float], file=sys.stdout):
+def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
+    """Print latency percentiles table."""
     pairs = compute_percentiles(latencies)
     if not pairs:
         return
@@ -251,7 +256,8 @@ def print_percentiles(latencies: list[float], file=sys.stdout):
         print(f"    p{p:<6} {format_duration(val):>12}", file=file)
 
 
-def print_rps_timeline(timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout):
+def print_rps_timeline(timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout) -> None:
+    """Print requests-per-second timeline."""
     if not timeline:
         return
     bucket_size = max(1, int(duration / 20))
@@ -342,7 +348,7 @@ def build_results_dict(stats: WorkerStats, duration: float, connections: int, co
     return result
 
 
-def write_csv_output(path: str, stats: WorkerStats):
+def write_csv_output(path: str, stats: WorkerStats) -> None:
     """Write ab-style CSV with percentile served times."""
     if not stats.latencies:
         return
@@ -356,7 +362,8 @@ def write_csv_output(path: str, stats: WorkerStats):
             writer.writerow([pct, round(sorted_lat[idx] * 1000, 3)])
 
 
-def write_json_output(path: str, results: dict):
+def write_json_output(path: str, results: dict) -> None:
+    """Write benchmark results as JSON to a file."""
     with open(path, "w") as f:
         json.dump(results, f, indent=2)
 
@@ -882,7 +889,8 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
         print(f"Warning: failed to export metrics to Prometheus endpoint {endpoint}: {e}")
 
 
-def print_results(stats: WorkerStats, duration: float, connections: int, start_time: float, config: BenchmarkConfig, rate_limiter: RateLimiter | None = None):
+def print_results(stats: WorkerStats, duration: float, connections: int, start_time: float, config: BenchmarkConfig, rate_limiter: RateLimiter | None = None) -> None:
+    """Print full benchmark results to stdout."""
     from pywrkr.workers import aggregate_breakdowns
 
     out = sys.stdout
@@ -1072,7 +1080,7 @@ def _format_latency_short(secs: float) -> str:
     return f"{secs:.1f}s"
 
 
-def print_autofind_summary(steps: list[StepResult], max_users: int | None):
+def print_autofind_summary(steps: list[StepResult], max_users: int | None) -> None:
     """Print the autofind summary table."""
     print()
     print("=" * 60)
@@ -1097,7 +1105,7 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None):
 # Multi-URL reporting
 # ---------------------------------------------------------------------------
 
-def print_multi_url_summary(results: "list[MultiUrlResult]"):  # noqa: F821
+def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F821
     """Print a comparison table across all URLs."""
     out = sys.stdout
     print(f"\n{'=' * 90}", file=out)

@@ -50,7 +50,8 @@ class LiveDashboard:
         config: BenchmarkConfig,
         start_time: float,
         active_users: dict | None = None,
-    ):
+    ) -> None:
+        """Initialize the dashboard with stats, config, and timing state."""
         self.all_stats = all_stats
         self.config = config
         self.start_time = start_time
@@ -154,7 +155,7 @@ class LiveDashboard:
 
         return Panel(table, title="pywrkr Live Dashboard", border_style="green")
 
-    async def run(self, stop_event: asyncio.Event):
+    async def run(self, stop_event: asyncio.Event) -> None:
         """Update the dashboard every 0.5s until stop_event is set."""
         from rich.live import Live
 
@@ -348,7 +349,8 @@ async def worker(
     stop_event: asyncio.Event,
     request_counter: dict | None = None,
     rate_limiter: RateLimiter | None = None,
-):
+) -> None:
+    """Async worker coroutine that sends HTTP requests in a loop."""
     start_time = time.monotonic()
     interval_start = start_time
     interval_count = 0
@@ -465,7 +467,7 @@ async def user_worker(
     start_time: float,
     active_users: dict,
     rate_limiter: RateLimiter | None = None,
-):
+) -> None:
     """Simulate a single virtual user with think time between requests."""
     cookie_header = "; ".join(config.cookies) if config.cookies else None
     req_headers = dict(config.headers)
@@ -572,7 +574,7 @@ async def scenario_worker(
     start_time: float,
     active_users: dict,
     request_counter: dict | None = None,
-):
+) -> None:
     """Execute a scripted scenario: iterate through steps in order, then repeat."""
     scenario = config.scenario
     if not scenario:
@@ -703,7 +705,8 @@ async def show_progress(
     all_stats: list[WorkerStats],
     stop: asyncio.Event,
     active_users: dict | None = None,
-):
+) -> None:
+    """Display a text-based progress line during benchmark execution."""
     while not stop.is_set():
         await asyncio.sleep(1)
         elapsed = time.monotonic() - start
@@ -736,7 +739,8 @@ async def show_progress(
 # Main benchmark runner
 # ---------------------------------------------------------------------------
 
-async def run_benchmark(config: BenchmarkConfig):
+async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
+    """Run a fixed-concurrency benchmark and return merged stats with exit code."""
     parsed = urlparse(config.url)
     use_ssl = parsed.scheme == "https"
 
@@ -881,7 +885,7 @@ async def run_benchmark(config: BenchmarkConfig):
 # User simulation runner
 # ---------------------------------------------------------------------------
 
-async def run_user_simulation(config: BenchmarkConfig):
+async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     """Run a virtual user load test with ramp-up and think time."""
     parsed = urlparse(config.url)
     use_ssl = parsed.scheme == "https"
@@ -1063,7 +1067,7 @@ def _extract_step_result(stats: WorkerStats, duration: float, num_users: int,
     return result
 
 
-async def run_autofind(config: AutofindConfig):
+async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     """Auto-ramp load to find maximum sustainable capacity.
 
     Starts with start_users, doubles (or multiplies by step_multiplier) each
@@ -1151,7 +1155,7 @@ async def run_autofind(config: AutofindConfig):
 
 
 def _write_autofind_json(config: AutofindConfig, steps: list[StepResult],
-                         max_users: int | None):
+                         max_users: int | None) -> None:
     """Write autofind results to a JSON file."""
     data = {
         "url": config.url,
