@@ -62,10 +62,10 @@ variable "worker_count" {
   default     = 3
 }
 
-variable "image_tag" {
-  description = "Docker image tag to deploy"
+variable "container_image" {
+  description = "Full container image URL (e.g. ghcr.io/kurok/pywrkr:latest)"
   type        = string
-  default     = "latest"
+  default     = "ghcr.io/kurok/pywrkr:latest"
 }
 
 # --- pywrkr runtime ---

@@ -35,13 +35,9 @@ variable "task_role_arn" {
   type = string
 }
 
-variable "ecr_repository_url" {
-  type = string
-}
-
-variable "image_tag" {
-  type    = string
-  default = "latest"
+variable "container_image" {
+  description = "Full container image URL (e.g. ghcr.io/kurok/pywrkr:latest)"
+  type        = string
 }
 
 variable "master_cpu" {

@@ -1,13 +1,12 @@
 /**
  * pywrkr Distributed Load Test Pipeline
  *
- * Builds, deploys, and runs pywrkr load tests on AWS ECS Fargate.
- * Supports simple URL mode and scenario-driven API testing.
+ * Deploys and runs pywrkr load tests on AWS ECS Fargate using the
+ * pre-built image from GitHub Container Registry.
  *
  * Prerequisites:
- *   - AWS credentials configured (Jenkins AWS credentials plugin or IAM role)
+ *   - AWS credentials in Jenkins credential store (aws-access-key-id, aws-secret-access-key)
  *   - Terraform >= 1.6 on the Jenkins agent
- *   - Docker on the Jenkins agent (for image builds)
  *   - aws-cli v2 on the Jenkins agent
  */
 
@@ -28,7 +27,7 @@ pipeline {
         string(
             name: 'IMAGE_TAG',
             defaultValue: 'latest',
-            description: 'Docker image tag to build and deploy'
+            description: 'pywrkr image tag from ghcr.io/kurok/pywrkr'
         )
         string(
             name: 'TARGET_URL',
@@ -37,7 +36,7 @@ pipeline {
         )
         string(
             name: 'TEST_DURATION',
-            defaultValue: '300',
+            defaultValue: '60',
             description: 'Test duration in seconds'
         )
         string(
@@ -47,7 +46,7 @@ pipeline {
         )
         string(
             name: 'CONNECTIONS',
-            defaultValue: '100',
+            defaultValue: '10',
             description: 'Concurrent connections per worker (ignored if USERS > 0)'
         )
         string(
@@ -57,7 +56,7 @@ pipeline {
         )
         string(
             name: 'WORKER_COUNT',
-            defaultValue: '3',
+            defaultValue: '2',
             description: 'Number of pywrkr worker containers'
         )
         string(
@@ -72,7 +71,7 @@ pipeline {
         )
         booleanParam(
             name: 'CLEANUP_AFTER_RUN',
-            defaultValue: false,
+            defaultValue: true,
             description: 'Scale services to 0 after test completes'
         )
         booleanParam(
@@ -83,11 +82,7 @@ pipeline {
     }
 
     environment {
-        TF_DIR              = "${WORKSPACE}/infra/terraform"
-        DOCKER_CONTEXT      = "${WORKSPACE}"
-        DOCKERFILE          = "${WORKSPACE}/infra/docker/Dockerfile"
-        AWS_REGION          = "${params.AWS_REGION}"
-        TF_VAR_FILE         = "${WORKSPACE}/infra/terraform/jenkins.auto.tfvars"
+        TF_DIR                = "${WORKSPACE}/infra/terraform"
         AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
         AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
     }
@@ -106,18 +101,23 @@ pipeline {
             }
         }
 
+        stage('Verify AWS Access') {
+            steps {
+                sh 'aws sts get-caller-identity --region ${AWS_REGION}'
+            }
+        }
+
         stage('Prepare Terraform Vars') {
             steps {
                 script {
-                    // Convert comma-separated thresholds to Terraform list
                     def thresholdList = params.THRESHOLDS
                         ? params.THRESHOLDS.split(',').collect { "\"${it.trim()}\"" }.join(', ')
                         : ''
 
-                    writeFile file: env.TF_VAR_FILE, text: """
+                    writeFile file: "${env.TF_DIR}/jenkins.auto.tfvars", text: """
 aws_region         = "${params.AWS_REGION}"
 environment        = "${params.ENVIRONMENT}"
-image_tag          = "${params.IMAGE_TAG}"
+container_image    = "ghcr.io/kurok/pywrkr:${params.IMAGE_TAG}"
 target_url         = "${params.TARGET_URL}"
 test_duration      = ${params.TEST_DURATION}
 connections        = ${params.CONNECTIONS}
@@ -129,38 +129,6 @@ scenario_file      = "${params.SCENARIO_FILE}"
 enable_nat_gateway = false
 """
                 }
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                script {
-                    def accountId = sh(
-                        script: "aws sts get-caller-identity --query Account --output text",
-                        returnStdout: true
-                    ).trim()
-                    env.AWS_ACCOUNT_ID = accountId
-                    env.ECR_REPO = "${accountId}.dkr.ecr.${params.AWS_REGION}.amazonaws.com/pywrkr-${params.ENVIRONMENT}-pywrkr"
-
-                    sh """
-                        docker build \
-                            -f ${env.DOCKERFILE} \
-                            -t pywrkr:${params.IMAGE_TAG} \
-                            ${env.DOCKER_CONTEXT}
-                    """
-                }
-            }
-        }
-
-        stage('Push to ECR') {
-            steps {
-                sh """
-                    aws ecr get-login-password --region ${params.AWS_REGION} \
-                        | docker login --username AWS --password-stdin ${env.ECR_REPO}
-
-                    docker tag pywrkr:${params.IMAGE_TAG} ${env.ECR_REPO}:${params.IMAGE_TAG}
-                    docker push ${env.ECR_REPO}:${params.IMAGE_TAG}
-                """
             }
         }
 
@@ -191,35 +159,30 @@ enable_nat_gateway = false
         stage('Wait for ECS Stability') {
             steps {
                 script {
-                    def clusterName = sh(
+                    env.ECS_CLUSTER = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw ecs_cluster_name",
                         returnStdout: true
                     ).trim()
-                    def masterService = sh(
+                    env.MASTER_SERVICE = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw master_service_name",
                         returnStdout: true
                     ).trim()
-                    def workerService = sh(
+                    env.WORKER_SERVICE = sh(
                         script: "cd ${env.TF_DIR} && terraform output -raw worker_service_name",
                         returnStdout: true
                     ).trim()
 
-                    env.ECS_CLUSTER = clusterName
-                    env.MASTER_SERVICE = masterService
-                    env.WORKER_SERVICE = workerService
-
-                    // Wait for master first, then workers
                     sh """
                         echo "Waiting for master service to stabilize..."
                         aws ecs wait services-stable \
-                            --cluster ${clusterName} \
-                            --services ${masterService} \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --services ${env.MASTER_SERVICE} \
                             --region ${params.AWS_REGION}
 
                         echo "Waiting for worker service to stabilize..."
                         aws ecs wait services-stable \
-                            --cluster ${clusterName} \
-                            --services ${workerService} \
+                            --cluster ${env.ECS_CLUSTER} \
+                            --services ${env.WORKER_SERVICE} \
                             --region ${params.AWS_REGION}
 
                         echo "All services stable."
@@ -231,8 +194,6 @@ enable_nat_gateway = false
         stage('Trigger Load Test') {
             steps {
                 script {
-                    // Force new deployment of master to start a fresh test run.
-                    // The master will wait for workers, distribute config, and run.
                     sh """
                         echo "Triggering new deployment (fresh test run)..."
                         aws ecs update-service \
@@ -271,7 +232,6 @@ enable_nat_gateway = false
                         returnStdout: true
                     ).trim()
 
-                    // Fetch last 30 minutes of logs
                     def startTime = System.currentTimeMillis() - (30 * 60 * 1000)
 
                     sh """
@@ -297,7 +257,6 @@ enable_nat_gateway = false
                             | tee worker-logs.txt
                     """
 
-                    // Check for threshold breaches in master logs
                     def masterLogs = readFile('master-logs.txt')
                     if (masterLogs.contains('THRESHOLD BREACHED') || masterLogs.contains('exit code: 2')) {
                         error("Load test failed: SLO threshold breached. Check master logs for details.")
@@ -323,7 +282,6 @@ enable_nat_gateway = false
                             sh 'terraform destroy -input=false -auto-approve'
                         }
                     } else if (params.CLEANUP_AFTER_RUN) {
-                        // Scale to 0 to stop billing
                         sh """
                             aws ecs update-service \
                                 --cluster ${env.ECS_CLUSTER} \

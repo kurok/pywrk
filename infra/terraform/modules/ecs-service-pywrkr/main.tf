@@ -205,7 +205,7 @@ locals {
     "pywrkr-master.${var.cloudmap_namespace}:9000",
   ]
 
-  image = "${var.ecr_repository_url}:${var.image_tag}"
+  image = var.container_image
 }
 
 resource "aws_ecs_task_definition" "master" {

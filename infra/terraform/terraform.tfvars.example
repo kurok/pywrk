@@ -4,7 +4,7 @@ environment = "dev"
 target_url  = "https://example.com"
 
 # --- Optional: adjust as needed ---
-image_tag     = "latest"
+container_image = "ghcr.io/kurok/pywrkr:latest"
 worker_count  = 3
 test_duration = 300
 connections   = 100

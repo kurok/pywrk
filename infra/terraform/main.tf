@@ -65,8 +65,7 @@ module "ecs_service_pywrkr" {
   task_role_arn      = module.iam.task_role_arn
 
   # Image
-  ecr_repository_url = module.ecr.repository_url
-  image_tag          = var.image_tag
+  container_image = var.container_image
 
   # Task sizing
   master_cpu    = var.master_cpu
