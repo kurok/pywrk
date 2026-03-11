@@ -8,16 +8,7 @@ import statistics
 import sys
 from collections import defaultdict
 
-from pywrkr.config import (
-    BenchmarkConfig,
-    LatencyBreakdown,
-    StepResult,
-    Threshold,
-    WorkerStats,
-    AutofindConfig,
-)
-from pywrkr.traffic_profiles import RateLimiter
-
+# Optional third-party imports
 try:
     from rich.live import Live
     from rich.table import Table
@@ -27,7 +18,6 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
-# Optional OpenTelemetry imports
 try:
     from opentelemetry import metrics as otel_metrics
     from opentelemetry.sdk.metrics import MeterProvider
@@ -37,6 +27,16 @@ try:
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
+
+from pywrkr.config import (
+    BenchmarkConfig,
+    LatencyBreakdown,
+    StepResult,
+    Threshold,
+    WorkerStats,
+    AutofindConfig,
+)
+from pywrkr.traffic_profiles import RateLimiter
 
 
 # ---------------------------------------------------------------------------
