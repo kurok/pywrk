@@ -3,10 +3,14 @@
 import json
 import logging
 import os
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Default constants
@@ -17,6 +21,18 @@ DEFAULT_THREADS = 4
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_THINK_TIME_JITTER = 0.5
 DEFAULT_MASTER_PORT = 9220
+
+# ---------------------------------------------------------------------------
+# Reservoir sampling defaults – controls memory bounds for collected data
+# ---------------------------------------------------------------------------
+# Maximum number of latency/breakdown samples kept in memory per WorkerStats.
+# Reservoir sampling preserves statistical accuracy for percentile estimation
+# while bounding memory usage.  100k entries ≈ 800 KB for floats.
+DEFAULT_RESERVOIR_SIZE = 100_000
+
+# Maximum number of unique error type keys tracked per WorkerStats.
+# Once the cap is reached, new error strings are folded into a catch-all key.
+DEFAULT_MAX_ERROR_TYPES = 1_000
 DEFAULT_AUTOFIND_MAX_ERROR_RATE = 1.0
 DEFAULT_AUTOFIND_MAX_P95 = 5.0
 DEFAULT_AUTOFIND_STEP_DURATION = 30.0
@@ -67,6 +83,110 @@ class LatencyBreakdown:
     is_reused: bool = False # True if the connection was reused (DNS/connect/TLS will be 0)
 
 
+class ReservoirSampler(list):
+    """Fixed-capacity list that uses reservoir sampling to maintain a
+    statistically representative sample.
+
+    Behaves like a regular ``list`` (supports iteration, indexing, ``len``,
+    ``sorted()``, etc.) so existing code that reads ``stats.latencies`` or
+    ``stats.breakdowns`` works unchanged.
+
+    When the number of items added exceeds *capacity*, new items randomly
+    replace existing ones with decreasing probability, preserving a uniform
+    sample of all items seen so far (Algorithm R – Vitter 1985).
+
+    Attributes:
+        capacity: Maximum number of items retained.
+        total_seen: Total number of items offered via ``append``.
+    """
+
+    __slots__ = ("capacity", "total_seen")
+
+    def __init__(self, capacity: int = DEFAULT_RESERVOIR_SIZE, iterable=()):
+        super().__init__()
+        self.capacity = capacity
+        self.total_seen = 0
+        for item in iterable:
+            self.append(item)
+
+    # -- core mutation via append (the hot path) ----------------------------
+
+    def append(self, item):
+        self.total_seen += 1
+        if len(self) < self.capacity:
+            super().append(item)
+        else:
+            j = random.randint(0, self.total_seen - 1)
+            if j < self.capacity:
+                self[j] = item
+
+    def extend(self, iterable):
+        for item in iterable:
+            self.append(item)
+
+    # -- helpers for merge / serialization ----------------------------------
+
+    @classmethod
+    def from_list(cls, items: list, capacity: int = DEFAULT_RESERVOIR_SIZE,
+                  total_seen: int | None = None) -> "ReservoirSampler":
+        """Reconstruct a sampler from an already-sampled list.
+
+        Used during deserialization and merge operations.  If *total_seen*
+        is ``None`` it defaults to ``len(items)`` (i.e. no sampling occurred).
+        """
+        sampler = cls.__new__(cls)
+        list.__init__(sampler, items[:capacity])
+        sampler.capacity = capacity
+        sampler.total_seen = total_seen if total_seen is not None else len(items)
+        return sampler
+
+    def __repr__(self):
+        return (f"ReservoirSampler(capacity={self.capacity}, "
+                f"total_seen={self.total_seen}, len={len(self)})")
+
+
+class CappedErrorDict(defaultdict):
+    """A ``defaultdict(int)`` that stops accepting new keys after a limit.
+
+    Once *max_keys* distinct keys exist, any new key is silently redirected
+    to a catch-all ``"[other errors]"`` bucket so memory stays bounded.
+
+    Usage::
+
+        d = CappedErrorDict(max_keys=1000)
+        d[some_error_string] += 1   # works normally until limit hit
+    """
+
+    _OVERFLOW_KEY = "[other errors]"
+
+    def __init__(self, max_keys: int = DEFAULT_MAX_ERROR_TYPES):
+        super().__init__(int)
+        self.max_keys = max_keys
+
+    def __getitem__(self, key):
+        # If the key already exists, return it directly (fast path).
+        if key in self:
+            return super().__getitem__(key)
+        # Key is new — check capacity.
+        if len(self) >= self.max_keys and key != self._OVERFLOW_KEY:
+            # Redirect reads of unknown keys to the overflow bucket.
+            return super().__getitem__(self._OVERFLOW_KEY) if self._OVERFLOW_KEY in self else 0
+        # Under capacity — create a new entry via defaultdict machinery.
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        # If the key already exists, update it.
+        if key in self:
+            super().__setitem__(key, value)
+            return
+        # Key is new — check capacity.
+        if len(self) >= self.max_keys and key != self._OVERFLOW_KEY:
+            # Redirect writes to the overflow bucket.
+            super().__setitem__(self._OVERFLOW_KEY, value)
+        else:
+            super().__setitem__(key, value)
+
+
 @dataclass
 class WorkerStats:
     """Aggregated statistics collected by a single worker."""
@@ -75,13 +195,19 @@ class WorkerStats:
     total_requests: int = 0
     total_bytes: int = 0
     errors: int = 0
-    error_types: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    error_types: CappedErrorDict = field(
+        default_factory=lambda: CappedErrorDict(DEFAULT_MAX_ERROR_TYPES)
+    )
     status_codes: dict[int, int] = field(default_factory=lambda: defaultdict(int))
-    latencies: list[float] = field(default_factory=list)
+    latencies: ReservoirSampler = field(
+        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
+    )
     rps_timeline: list[tuple[float, int]] = field(default_factory=list)
     content_length_errors: int = 0
     step_latencies: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
-    breakdowns: list[LatencyBreakdown] = field(default_factory=list)
+    breakdowns: ReservoirSampler = field(
+        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
+    )
 
 
 @dataclass

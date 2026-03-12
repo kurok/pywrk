@@ -178,7 +178,8 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "total_bytes": stats.total_bytes,
         "errors": stats.errors,
         "content_length_errors": stats.content_length_errors,
-        "latencies": stats.latencies,
+        "latencies": list(stats.latencies),
+        "latencies_total_seen": getattr(stats.latencies, "total_seen", len(stats.latencies)),
         "error_types": dict(stats.error_types),
         "status_codes": {str(k): v for k, v in stats.status_codes.items()},
         "rps_timeline": stats.rps_timeline,
@@ -189,17 +190,21 @@ def _serialize_stats(stats: WorkerStats) -> dict:
              "ttfb": b.ttfb, "transfer": b.transfer, "is_reused": b.is_reused}
             for b in stats.breakdowns
         ],
+        "breakdowns_total_seen": getattr(stats.breakdowns, "total_seen", len(stats.breakdowns)),
     }
 
 
 def _deserialize_stats(data: dict) -> WorkerStats:
     """Deserialize a dict back into WorkerStats."""
+    from pywrkr.config import ReservoirSampler
     ws = WorkerStats()
     ws.total_requests = data.get("total_requests", 0)
     ws.total_bytes = data.get("total_bytes", 0)
     ws.errors = data.get("errors", 0)
     ws.content_length_errors = data.get("content_length_errors", 0)
-    ws.latencies = data.get("latencies", [])
+    lat_items = data.get("latencies", [])
+    lat_seen = data.get("latencies_total_seen", len(lat_items))
+    ws.latencies = ReservoirSampler.from_list(lat_items, total_seen=lat_seen)
     for k, v in data.get("error_types", {}).items():
         ws.error_types[k] = v
     for k, v in data.get("status_codes", {}).items():
@@ -208,12 +213,15 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     # Previously missing:
     for k, v in data.get("step_latencies", {}).items():
         ws.step_latencies[k] = v
+    bd_items = []
     for b in data.get("breakdowns", []):
-        ws.breakdowns.append(LatencyBreakdown(
+        bd_items.append(LatencyBreakdown(
             dns=b.get("dns", 0.0), connect=b.get("connect", 0.0),
             tls=b.get("tls", 0.0), ttfb=b.get("ttfb", 0.0),
             transfer=b.get("transfer", 0.0), is_reused=b.get("is_reused", False),
         ))
+    bd_seen = data.get("breakdowns_total_seen", len(bd_items))
+    ws.breakdowns = ReservoirSampler.from_list(bd_items, total_seen=bd_seen)
     return ws
 
 
