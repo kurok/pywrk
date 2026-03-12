@@ -193,6 +193,24 @@ class CappedErrorDict(defaultdict):
             super().__setitem__(key, value)
 
 
+class ActiveUsers:
+    """Thread-safe (single-threaded asyncio) counter for active virtual users."""
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count: int = 0
+
+
+class RequestCounter:
+    """Shared mutable counter for request-count mode."""
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, total: int) -> None:
+        self.remaining: int = total
+
+
 @dataclass
 class WorkerStats:
     """Aggregated statistics collected by a single worker."""

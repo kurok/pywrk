@@ -18,9 +18,11 @@ import aiohttp
 
 from pywrkr import reporting as _reporting
 from pywrkr.config import (
+    ActiveUsers,
     AutofindConfig,
     BenchmarkConfig,
     LatencyBreakdown,
+    RequestCounter,
     StepResult,
     WorkerStats,
 )
@@ -52,7 +54,7 @@ class LiveDashboard:
         all_stats: list[WorkerStats],
         config: BenchmarkConfig,
         start_time: float,
-        active_users: dict | None = None,
+        active_users: ActiveUsers | None = None,
     ) -> None:
         """Initialize the dashboard with stats, config, and timing state."""
         self.all_stats = all_stats
@@ -120,7 +122,7 @@ class LiveDashboard:
         table.add_row("", "")
 
         if self.active_users is not None:
-            table.add_row("Active Users:", f"{self.active_users['count']}")
+            table.add_row("Active Users:", f"{self.active_users.count}")
 
         table.add_row("Requests:", f"{total_req:,}")
         table.add_row("Errors:", f"{total_err:,} ({error_rate:.1f}%)")
@@ -576,7 +578,7 @@ async def worker(
     stats: WorkerStats,
     connector: aiohttp.TCPConnector,
     stop_event: asyncio.Event,
-    request_counter: dict | None = None,
+    request_counter: RequestCounter | None = None,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Async worker coroutine that sends HTTP requests in a loop.
@@ -600,9 +602,9 @@ async def worker(
                     break
 
             if request_counter is not None:
-                if request_counter["remaining"] <= 0:
+                if request_counter.remaining <= 0:
                     break
-                request_counter["remaining"] -= 1
+                request_counter.remaining -= 1
 
             if rate_limiter is not None:
                 await rate_limiter.acquire()
@@ -648,13 +650,13 @@ async def user_worker(
     connector: aiohttp.TCPConnector,
     stop_event: asyncio.Event,
     start_time: float,
-    active_users: dict,
+    active_users: ActiveUsers,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Simulate a single virtual user with configurable think time."""
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
-    active_users["count"] += 1
+    active_users.count += 1
     session_kwargs = _build_session_kwargs(connector, config, stats)
 
     try:
@@ -697,7 +699,7 @@ async def user_worker(
                 if await _think_time_wait(config.think_time, config.think_time_jitter, stop_event):
                     break
     finally:
-        active_users["count"] -= 1
+        active_users.count -= 1
 
 
 def _prepare_step_body(step_body, headers: dict) -> bytes | None:
@@ -720,8 +722,8 @@ async def scenario_worker(
     connector: aiohttp.TCPConnector,
     stop_event: asyncio.Event,
     start_time: float,
-    active_users: dict,
-    request_counter: dict | None = None,
+    active_users: ActiveUsers,
+    request_counter: RequestCounter | None = None,
 ) -> None:
     """Execute a scripted multi-step scenario in a loop."""
     scenario = config.scenario
@@ -733,7 +735,7 @@ async def scenario_worker(
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     expected_length_ref: list[int | None] = [None]
 
-    active_users["count"] += 1
+    active_users.count += 1
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
             while not stop_event.is_set():
@@ -747,9 +749,9 @@ async def scenario_worker(
                             return
 
                     if request_counter is not None:
-                        if request_counter["remaining"] <= 0:
+                        if request_counter.remaining <= 0:
                             return
-                        request_counter["remaining"] -= 1
+                        request_counter.remaining -= 1
 
                     effective_timeout = _calc_effective_timeout(config, start_time)
                     client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
@@ -790,7 +792,7 @@ async def scenario_worker(
                     if await _think_time_wait(think, config.think_time_jitter, stop_event):
                         return
     finally:
-        active_users["count"] -= 1
+        active_users.count -= 1
 
 
 async def show_progress(
@@ -799,7 +801,7 @@ async def show_progress(
     total_requests: int | None,
     all_stats: list[WorkerStats],
     stop: asyncio.Event,
-    active_users: dict | None = None,
+    active_users: ActiveUsers | None = None,
 ) -> None:
     """Display a text-based progress line during benchmark execution."""
     while not stop.is_set():
@@ -811,7 +813,7 @@ async def show_progress(
 
         users_str = ""
         if active_users is not None:
-            users_str = f" | {active_users['count']:>5} users"
+            users_str = f" | {active_users.count:>5} users"
 
         if duration is not None:
             pct = min(elapsed / duration * 100, 100)
@@ -864,7 +866,7 @@ def _create_progress_task(
     *,
     duration: float | None = None,
     num_requests: int | None = None,
-    active_users: dict | None = None,
+    active_users: ActiveUsers | None = None,
     quiet: bool = False,
 ) -> asyncio.Task:
     """Create the progress display or live dashboard task."""
@@ -991,9 +993,9 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     remainder = config.connections % config.threads
 
     # Shared counter for request-count mode
-    request_counter = None
+    request_counter: RequestCounter | None = None
     if config.num_requests is not None:
-        request_counter = {"remaining": config.num_requests}
+        request_counter = RequestCounter(config.num_requests)
 
     all_stats: list[WorkerStats] = []
     tasks = []
@@ -1016,7 +1018,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
             ws = WorkerStats()
             all_stats.append(ws)
             if config.scenario:
-                _active = {"count": 0}
+                _active = ActiveUsers()
                 tasks.append(
                     asyncio.create_task(
                         scenario_worker(
@@ -1134,7 +1136,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
 
     all_stats: list[WorkerStats] = []
     tasks = []
-    active_users: dict = {"count": 0}
+    active_users = ActiveUsers()
     start_time = time.monotonic()
 
     # Ramp-up: stagger user launches

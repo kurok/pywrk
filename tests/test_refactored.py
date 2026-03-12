@@ -334,7 +334,9 @@ class TestCancellationBehavior(AioHTTPTestCase):
             timeout_sec=5,
         )
         stop_event = asyncio.Event()
-        active_users = {"count": 0}
+        from pywrkr.config import ActiveUsers
+
+        active_users = ActiveUsers()
 
         connector = aiohttp.TCPConnector(limit=1)
         ws = WorkerStats()
@@ -350,7 +352,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
         await connector.close()
 
         self.assertGreater(ws.total_requests, 0)
-        self.assertEqual(active_users["count"], 0, "Active users should be 0 after exit")
+        self.assertEqual(active_users.count, 0, "Active users should be 0 after exit")
 
 
 # ---------------------------------------------------------------------------
