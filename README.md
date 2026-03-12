@@ -646,16 +646,28 @@ pip install pywrkr[otel]
 pip install pywrkr[all]
 ```
 
+## Development Setup
+
+```bash
+# Install in editable mode with dev dependencies (pytest + pytest-xdist)
+pip install -e ".[dev]"
+```
+
 ## Testing
 
 ```bash
 # Run all tests
-python -m pytest tests/test_pywrkr.py -v
+python -m pytest tests/ -v
 
-# Run specific test class
+# Run a specific test file
+python -m pytest tests/test_pywrkr.py -v
+python -m pytest tests/test_har_import.py -v
+
+# Run a specific test class
 python -m pytest tests/test_pywrkr.py::TestMakeUrl -v
-python -m pytest tests/test_pywrkr.py::TestBenchmarkIntegration -v
-python -m pytest tests/test_pywrkr.py::TestAutofindIntegration -v
+
+# Run tests sequentially (useful for debugging)
+python -m pytest tests/ -v -n 0
 ```
 
 The test suite includes unit and integration tests covering:
@@ -663,6 +675,7 @@ The test suite includes unit and integration tests covering:
 - Integration tests with a real aiohttp test server (duration mode, request-count mode, POST, auth, cookies, content-length verification, keepalive, cache-buster)
 - User simulation integration tests (think time, ramp-up, jitter, error handling, output formats)
 - Autofind integration tests (healthy server, error endpoint, threshold enforcement, binary search, JSON output, summary table)
+- HAR import tests (parsing, filtering, scenario generation)
 
 ## License
 
