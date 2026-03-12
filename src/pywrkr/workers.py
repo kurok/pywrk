@@ -407,6 +407,7 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
 
 class _RequestResult:
     """Result from _execute_request; avoids creating dataclass per request."""
+
     __slots__ = ("latency", "status", "data_len", "error_name", "cancelled")
 
     def __init__(self) -> None:
@@ -447,8 +448,12 @@ async def _execute_request(
     req_start = time.monotonic()
     try:
         async with session.request(
-            method, url, headers=headers, data=body,
-            ssl=ssl_verify, timeout=timeout,
+            method,
+            url,
+            headers=headers,
+            data=body,
+            ssl=ssl_verify,
+            timeout=timeout,
             trace_request_ctx=trace_ctx,
         ) as resp:
             data = await resp.read()
@@ -495,8 +500,10 @@ async def _execute_request(
                 stats.error_types[f"HTTP {resp.status}"] += 1
 
             if config.verbosity >= 4:
-                logger.debug(f"[v4] {method} {url} -> {resp.status} "
-                             f"({len(data)}B, {format_duration(latency)})")
+                logger.debug(
+                    f"[v4] {method} {url} -> {resp.status} "
+                    f"({len(data)}B, {format_duration(latency)})"
+                )
             elif config.verbosity >= 3:
                 logger.debug(f"[v3] {resp.status}")
 
@@ -608,9 +615,17 @@ async def worker(
             trace_ctx = {} if config.latency_breakdown else None
 
             result = await _execute_request(
-                session, config.method, request_url, req_headers, config.body,
-                config.ssl_config.verify, client_timeout, stats, config,
-                trace_ctx, expected_length_ref,
+                session,
+                config.method,
+                request_url,
+                req_headers,
+                config.body,
+                config.ssl_config.verify,
+                client_timeout,
+                stats,
+                config,
+                trace_ctx,
+                expected_length_ref,
             )
             if result.cancelled:
                 break
@@ -660,9 +675,17 @@ async def user_worker(
                 trace_ctx = {} if config.latency_breakdown else None
 
                 result = await _execute_request(
-                    session, config.method, request_url, req_headers, config.body,
-                    config.ssl_config.verify, client_timeout, stats, config,
-                    trace_ctx, expected_length_ref,
+                    session,
+                    config.method,
+                    request_url,
+                    req_headers,
+                    config.body,
+                    config.ssl_config.verify,
+                    client_timeout,
+                    stats,
+                    config,
+                    trace_ctx,
+                    expected_length_ref,
                     log_prefix=f"User {user_id} ",
                 )
                 if result.cancelled:
@@ -736,9 +759,17 @@ async def scenario_worker(
                     step_name = step.name or f"{step.method} {step.path}"
 
                     result = await _execute_request(
-                        session, step.method, request_url, req_headers, body,
-                        config.ssl_config.verify, client_timeout, stats, config,
-                        None, expected_length_ref,
+                        session,
+                        step.method,
+                        request_url,
+                        req_headers,
+                        body,
+                        config.ssl_config.verify,
+                        client_timeout,
+                        stats,
+                        config,
+                        None,
+                        expected_length_ref,
                         step_name=step_name,
                         assert_status=step.assert_status,
                         assert_body_contains=step.assert_body_contains,

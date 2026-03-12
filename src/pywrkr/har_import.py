@@ -161,16 +161,18 @@ def parse_har(path: str) -> list[HarEntry]:
 
         started_datetime = entry.get("startedDateTime", "")
 
-        entries.append(HarEntry(
-            url=url,
-            method=method,
-            headers=headers,
-            body=body if body else None,
-            content_type=content_type,
-            status=status,
-            time_ms=time_ms,
-            started_datetime=started_datetime,
-        ))
+        entries.append(
+            HarEntry(
+                url=url,
+                method=method,
+                headers=headers,
+                body=body if body else None,
+                content_type=content_type,
+                status=status,
+                time_ms=time_ms,
+                started_datetime=started_datetime,
+            )
+        )
 
     return entries
 

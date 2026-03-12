@@ -16,6 +16,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_tokens_consumed_correctly(self):
         """Sequential acquires should space requests according to the rate."""
+
         async def _run():
             rl = RateLimiter(rate=100)  # 10ms intervals
             times = []
@@ -33,6 +34,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_high_concurrency_respects_rate(self):
         """Many concurrent coroutines sharing one limiter should respect rate."""
+
         async def _run():
             rl = RateLimiter(rate=200)  # 5ms intervals
             acquire_times = []
@@ -56,6 +58,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_high_concurrency_no_duplicate_slots(self):
         """Concurrent coroutines must not get the same time slot."""
+
         async def _run():
             rl = RateLimiter(rate=500)  # 2ms intervals
             acquire_times = []
@@ -69,8 +72,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
             acquire_times.sort()
             # Check intervals between consecutive acquires
             intervals = [
-                acquire_times[i + 1] - acquire_times[i]
-                for i in range(len(acquire_times) - 1)
+                acquire_times[i + 1] - acquire_times[i] for i in range(len(acquire_times) - 1)
             ]
             return intervals
 
@@ -79,11 +81,11 @@ class TestRateLimiterLockFree(unittest.TestCase):
         # (which would indicate duplicate slot assignment)
         zero_intervals = sum(1 for iv in intervals if iv < 0.0005)
         # Allow a small number of near-zero intervals due to timing jitter
-        self.assertLess(zero_intervals, 3,
-                        "Too many near-zero intervals suggest slot contention")
+        self.assertLess(zero_intervals, 3, "Too many near-zero intervals suggest slot contention")
 
     def test_waits_counter_incremented(self):
         """The waits counter should track sleeps even in lock-free mode."""
+
         async def _run():
             rl = RateLimiter(rate=200)
             for _ in range(10):
@@ -96,6 +98,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_rate_zero_does_not_block(self):
         """Rate of 0 should return immediately without blocking."""
+
         async def _run():
             rl = RateLimiter(rate=0)
             start = time.monotonic()
@@ -108,6 +111,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_first_acquire_is_instant(self):
         """The very first acquire should not sleep."""
+
         async def _run():
             rl = RateLimiter(rate=10)  # 100ms intervals
             start = time.monotonic()
@@ -119,6 +123,7 @@ class TestRateLimiterLockFree(unittest.TestCase):
 
     def test_ramp_rate_with_concurrency(self):
         """Ramped rate with concurrent workers should not crash or deadlock."""
+
         async def _run():
             rl = RateLimiter(rate=50, end_rate=200, ramp_duration=0.5)
 

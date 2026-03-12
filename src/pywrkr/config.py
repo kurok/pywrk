@@ -130,8 +130,9 @@ class ReservoirSampler(list):
     # -- helpers for merge / serialization ----------------------------------
 
     @classmethod
-    def from_list(cls, items: list, capacity: int = DEFAULT_RESERVOIR_SIZE,
-                  total_seen: int | None = None) -> "ReservoirSampler":
+    def from_list(
+        cls, items: list, capacity: int = DEFAULT_RESERVOIR_SIZE, total_seen: int | None = None
+    ) -> "ReservoirSampler":
         """Reconstruct a sampler from an already-sampled list.
 
         Used during deserialization and merge operations.  If *total_seen*
@@ -144,8 +145,10 @@ class ReservoirSampler(list):
         return sampler
 
     def __repr__(self):
-        return (f"ReservoirSampler(capacity={self.capacity}, "
-                f"total_seen={self.total_seen}, len={len(self)})")
+        return (
+            f"ReservoirSampler(capacity={self.capacity}, "
+            f"total_seen={self.total_seen}, len={len(self)})"
+        )
 
 
 class CappedErrorDict(defaultdict):
