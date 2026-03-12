@@ -13,6 +13,11 @@ from pywrkr.config import (
     DEFAULT_THREADS,
     DEFAULT_TIMEOUT,
     BenchmarkConfig,
+    LatencyBreakdown,
+    SSLConfig,
+    Scenario,
+    ScenarioStep,
+    Threshold,
     WorkerStats,
 )
 from pywrkr.reporting import (
@@ -23,6 +28,65 @@ from pywrkr.reporting import (
 from pywrkr.workers import run_benchmark, run_user_simulation
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_ssl_config(ssl_cfg: SSLConfig) -> dict:
+    """Serialize SSLConfig to a JSON-safe dict."""
+    return {"verify": ssl_cfg.verify, "ca_bundle": ssl_cfg.ca_bundle}
+
+
+def _deserialize_ssl_config(data: dict | None) -> SSLConfig:
+    """Deserialize a dict back into SSLConfig."""
+    if not data:
+        return SSLConfig()
+    return SSLConfig(verify=data.get("verify", False), ca_bundle=data.get("ca_bundle"))
+
+
+def _serialize_threshold(th: Threshold) -> dict:
+    return {"metric": th.metric, "operator": th.operator, "value": th.value, "raw_expr": th.raw_expr}
+
+
+def _deserialize_threshold(data: dict) -> Threshold:
+    return Threshold(metric=data["metric"], operator=data["operator"],
+                     value=data["value"], raw_expr=data["raw_expr"])
+
+
+def _serialize_scenario_step(step: ScenarioStep) -> dict:
+    return {
+        "path": step.path, "method": step.method, "body": step.body,
+        "headers": dict(step.headers), "assert_status": step.assert_status,
+        "assert_body_contains": step.assert_body_contains,
+        "think_time": step.think_time, "name": step.name,
+    }
+
+
+def _deserialize_scenario_step(data: dict) -> ScenarioStep:
+    return ScenarioStep(
+        path=data["path"], method=data.get("method", "GET"), body=data.get("body"),
+        headers=data.get("headers", {}), assert_status=data.get("assert_status"),
+        assert_body_contains=data.get("assert_body_contains"),
+        think_time=data.get("think_time"), name=data.get("name"),
+    )
+
+
+def _serialize_scenario(scenario: Scenario | None) -> dict | None:
+    if scenario is None:
+        return None
+    return {
+        "name": scenario.name,
+        "think_time": scenario.think_time,
+        "steps": [_serialize_scenario_step(s) for s in scenario.steps],
+    }
+
+
+def _deserialize_scenario(data: dict | None) -> Scenario | None:
+    if data is None:
+        return None
+    return Scenario(
+        name=data.get("name", "Unnamed Scenario"),
+        think_time=data.get("think_time", 0.0),
+        steps=[_deserialize_scenario_step(s) for s in data.get("steps", [])],
+    )
 
 
 def _serialize_config(config: BenchmarkConfig) -> dict:
@@ -50,6 +114,18 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "ramp_up": config.ramp_up,
         "think_time": config.think_time,
         "think_time_jitter": config.think_time_jitter,
+        # Previously missing fields:
+        "ssl_config": _serialize_ssl_config(config.ssl_config),
+        "tags": dict(config.tags),
+        "otel_endpoint": config.otel_endpoint,
+        "prom_remote_write": config.prom_remote_write,
+        "thresholds": [_serialize_threshold(t) for t in config.thresholds],
+        "scenario": _serialize_scenario(config.scenario),
+        "html_report": config.html_report,
+        "csv_output": config.csv_output,
+        "json_output": config.json_output,
+        "html_output": config.html_output,
+        "live_dashboard": config.live_dashboard,
     }
 
 
@@ -79,6 +155,18 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         ramp_up=data.get("ramp_up", 0.0),
         think_time=data.get("think_time", 0.0),
         think_time_jitter=data.get("think_time_jitter", DEFAULT_THINK_TIME_JITTER),
+        # Previously missing fields:
+        ssl_config=_deserialize_ssl_config(data.get("ssl_config")),
+        tags=data.get("tags", {}),
+        otel_endpoint=data.get("otel_endpoint"),
+        prom_remote_write=data.get("prom_remote_write"),
+        thresholds=[_deserialize_threshold(t) for t in data.get("thresholds", [])],
+        scenario=_deserialize_scenario(data.get("scenario")),
+        html_report=data.get("html_report"),
+        csv_output=data.get("csv_output"),
+        json_output=data.get("json_output"),
+        html_output=data.get("html_output", False),
+        live_dashboard=data.get("live_dashboard", False),
         _quiet=True,
     )
 
@@ -94,6 +182,13 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "error_types": dict(stats.error_types),
         "status_codes": {str(k): v for k, v in stats.status_codes.items()},
         "rps_timeline": stats.rps_timeline,
+        # Previously missing:
+        "step_latencies": {k: v for k, v in stats.step_latencies.items()},
+        "breakdowns": [
+            {"dns": b.dns, "connect": b.connect, "tls": b.tls,
+             "ttfb": b.ttfb, "transfer": b.transfer, "is_reused": b.is_reused}
+            for b in stats.breakdowns
+        ],
     }
 
 
@@ -110,6 +205,15 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     for k, v in data.get("status_codes", {}).items():
         ws.status_codes[int(k)] = v
     ws.rps_timeline = [tuple(x) for x in data.get("rps_timeline", [])]
+    # Previously missing:
+    for k, v in data.get("step_latencies", {}).items():
+        ws.step_latencies[k] = v
+    for b in data.get("breakdowns", []):
+        ws.breakdowns.append(LatencyBreakdown(
+            dns=b.get("dns", 0.0), connect=b.get("connect", 0.0),
+            tls=b.get("tls", 0.0), ttfb=b.get("ttfb", 0.0),
+            transfer=b.get("transfer", 0.0), is_reused=b.get("is_reused", False),
+        ))
     return ws
 
 

@@ -401,6 +401,165 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Shared request execution helper
+# ---------------------------------------------------------------------------
+
+
+class _RequestResult:
+    """Result from _execute_request; avoids creating dataclass per request."""
+    __slots__ = ("latency", "status", "data_len", "error_name", "cancelled")
+
+    def __init__(self) -> None:
+        self.latency: float = 0.0
+        self.status: int = 0
+        self.data_len: int = 0
+        self.error_name: str | None = None
+        self.cancelled: bool = False
+
+
+async def _execute_request(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    ssl_verify: bool,
+    timeout: aiohttp.ClientTimeout,
+    stats: WorkerStats,
+    config: BenchmarkConfig,
+    trace_ctx: dict | None,
+    expected_length_ref: list[int | None],
+    step_name: str | None = None,
+    assert_status: int | None = None,
+    assert_body_contains: str | None = None,
+    log_prefix: str = "",
+) -> _RequestResult:
+    """Execute a single HTTP request and record stats.
+
+    This is the shared core extracted from worker(), user_worker(), and
+    scenario_worker(). Handles: request execution, latency recording, status
+    code counting, content-length verification, error handling, and step
+    latency tracking.
+
+    Returns a _RequestResult with outcome details.
+    """
+    result = _RequestResult()
+    req_start = time.monotonic()
+    try:
+        async with session.request(
+            method, url, headers=headers, data=body,
+            ssl=ssl_verify, timeout=timeout,
+            trace_request_ctx=trace_ctx,
+        ) as resp:
+            data = await resp.read()
+            latency = time.monotonic() - req_start
+            result.latency = latency
+            result.status = resp.status
+            result.data_len = len(data)
+
+            stats.total_requests += 1
+            stats.total_bytes += len(data)
+            stats.latencies.append(latency)
+            stats.status_codes[resp.status] += 1
+            if step_name:
+                stats.step_latencies[step_name].append(latency)
+
+            # Content-length verification (ab -l style)
+            if config.verify_content_length:
+                cl = resp.headers.get("Content-Length")
+                if cl is not None:
+                    declared = int(cl)
+                    if expected_length_ref[0] is None:
+                        expected_length_ref[0] = declared
+                    if declared != expected_length_ref[0] or len(data) != declared:
+                        stats.content_length_errors += 1
+
+            # Assertion checks (scenario mode)
+            assertion_failed = False
+            if assert_status is not None and resp.status != assert_status:
+                stats.errors += 1
+                err_msg = f"AssertStatus: expected {assert_status}, got {resp.status}"
+                stats.error_types[err_msg] += 1
+                assertion_failed = True
+
+            if assert_body_contains is not None:
+                body_text = data.decode("utf-8", errors="replace")
+                if assert_body_contains not in body_text:
+                    stats.errors += 1
+                    err_msg = f"AssertBody: '{assert_body_contains}' not found"
+                    stats.error_types[err_msg] += 1
+                    assertion_failed = True
+
+            if not assertion_failed and resp.status >= 400:
+                stats.errors += 1
+                stats.error_types[f"HTTP {resp.status}"] += 1
+
+            if config.verbosity >= 4:
+                logger.debug(f"[v4] {method} {url} -> {resp.status} "
+                             f"({len(data)}B, {format_duration(latency)})")
+            elif config.verbosity >= 3:
+                logger.debug(f"[v3] {resp.status}")
+
+    except asyncio.CancelledError:
+        result.cancelled = True
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        latency = time.monotonic() - req_start
+        result.latency = latency
+        error_name = type(e).__name__
+        result.error_name = error_name
+        stats.total_requests += 1
+        stats.errors += 1
+        stats.error_types[error_name] += 1
+        stats.latencies.append(latency)
+        if step_name:
+            stats.step_latencies[step_name].append(latency)
+        logger.warning("%sRequest error: %s: %s", log_prefix, error_name, e)
+
+    return result
+
+
+def _build_session_kwargs(
+    connector: aiohttp.TCPConnector,
+    config: BenchmarkConfig,
+    stats: WorkerStats,
+) -> dict:
+    """Build kwargs for aiohttp.ClientSession including optional trace config."""
+    kwargs: dict = {"connector": connector}
+    if config.latency_breakdown:
+        kwargs["trace_configs"] = [create_trace_config(stats)]
+    return kwargs
+
+
+async def _think_time_wait(
+    think: float,
+    jitter: float,
+    stop_event: asyncio.Event,
+) -> bool:
+    """Sleep for think time with jitter. Returns True if stop_event was set."""
+    if think <= 0 or stop_event.is_set():
+        return stop_event.is_set()
+    lo = think * (1 - jitter)
+    hi = think * (1 + jitter)
+    delay = random.uniform(lo, hi)
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        return True  # stop_event was set
+    except asyncio.TimeoutError:
+        return False  # think time elapsed normally
+
+
+def _calc_effective_timeout(
+    config: BenchmarkConfig,
+    start_time: float,
+) -> float:
+    """Calculate effective request timeout considering remaining duration."""
+    if config.duration is not None:
+        remaining = config.duration - (time.monotonic() - start_time)
+        return min(config.timeout_sec, remaining + 1)
+    return config.timeout_sec
+
+
+# ---------------------------------------------------------------------------
 # Workers
 # ---------------------------------------------------------------------------
 
@@ -417,117 +576,44 @@ async def worker(
 
     Executes HTTP requests against the configured URL until the stop condition
     is met (duration elapsed, request count reached, or stop_event set).
-
-    Args:
-        config: Benchmark configuration including URL, method, headers, and timeouts.
-        stats: WorkerStats instance where request results are recorded. Shared state
-            is safe here because asyncio is single-threaded (no GIL contention).
-        connector: aiohttp TCP connector with connection pooling.
-        stop_event: Event that signals all workers to stop (set on SIGINT/SIGTERM
-            or when the benchmark duration expires).
-        request_counter: Optional shared dict with 'remaining' key for request-count
-            mode (-n flag). Workers atomically decrement this counter.
-        rate_limiter: Optional RateLimiter for throttling request rate.
-
-    Raises:
-        asyncio.CancelledError: Propagated if the task is cancelled externally.
-            The worker breaks cleanly and records final RPS timeline data.
-
-    Concurrency notes:
-        Each worker runs as an independent asyncio task sharing a connector's
-        connection pool. Stats mutation is safe because all tasks run on the
-        same event loop thread.
     """
     start_time = time.monotonic()
     interval_start = start_time
     interval_count = 0
 
     req_headers = _build_request_headers(config)
-
-    expected_length: int | None = None
-
-    session_kwargs: dict = {"connector": connector}
-    if config.latency_breakdown:
-        trace_config = create_trace_config(stats)
-        session_kwargs["trace_configs"] = [trace_config]
+    expected_length_ref: list[int | None] = [None]
+    session_kwargs = _build_session_kwargs(connector, config, stats)
 
     async with aiohttp.ClientSession(**session_kwargs) as session:
         while not stop_event.is_set():
-            # Check termination: duration mode or request-count mode
             if config.duration is not None:
                 elapsed = time.monotonic() - start_time
                 if elapsed >= config.duration:
                     break
-                remaining = config.duration - elapsed
-                effective_timeout = min(config.timeout_sec, remaining + 1)
-            else:
-                effective_timeout = config.timeout_sec
 
-            # Request-count mode: atomically claim a request slot
             if request_counter is not None:
                 if request_counter["remaining"] <= 0:
                     break
                 request_counter["remaining"] -= 1
 
-            # Rate limiting: wait for permission before sending
             if rate_limiter is not None:
                 await rate_limiter.acquire()
                 if stop_event.is_set():
                     break
 
+            effective_timeout = _calc_effective_timeout(config, start_time)
             client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
             request_url = make_url(config.url, config.random_param)
-            req_start = time.monotonic()
             trace_ctx = {} if config.latency_breakdown else None
-            try:
-                async with session.request(
-                    config.method,
-                    request_url,
-                    headers=req_headers,
-                    data=config.body,
-                    ssl=config.ssl_config.verify,
-                    timeout=client_timeout,
-                    trace_request_ctx=trace_ctx,
-                ) as resp:
-                    data = await resp.read()
-                    latency = time.monotonic() - req_start
-                    stats.total_requests += 1
-                    stats.total_bytes += len(data)
-                    stats.latencies.append(latency)
-                    stats.status_codes[resp.status] += 1
 
-                    # Content-length verification (ab -l style)
-                    if config.verify_content_length:
-                        cl = resp.headers.get("Content-Length")
-                        if cl is not None:
-                            declared = int(cl)
-                            if expected_length is None:
-                                expected_length = declared
-                            if declared != expected_length or len(data) != declared:
-                                stats.content_length_errors += 1
-
-                    if resp.status >= 400:
-                        stats.errors += 1
-                        stats.error_types[f"HTTP {resp.status}"] += 1
-
-                    if config.verbosity >= 4:
-                        logger.debug(
-                            f"[v4] {config.method} {request_url} -> {resp.status} "
-                            f"({len(data)}B, {format_duration(latency)})"
-                        )
-                    elif config.verbosity >= 3:
-                        logger.debug(f"[v3] {resp.status}")
-
-            except asyncio.CancelledError:
+            result = await _execute_request(
+                session, config.method, request_url, req_headers, config.body,
+                config.ssl_config.verify, client_timeout, stats, config,
+                trace_ctx, expected_length_ref,
+            )
+            if result.cancelled:
                 break
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                latency = time.monotonic() - req_start
-                stats.total_requests += 1
-                stats.errors += 1
-                error_name = type(e).__name__
-                stats.error_types[error_name] += 1
-                stats.latencies.append(latency)
-                logger.warning("Request error: %s: %s", error_name, e)
 
             interval_count += 1
             now = time.monotonic()
@@ -550,40 +636,11 @@ async def user_worker(
     active_users: dict,
     rate_limiter: RateLimiter | None = None,
 ) -> None:
-    """Simulate a single virtual user with configurable think time.
-
-    Models a real user session: send a request, wait (think time with jitter),
-    repeat. The user is counted as active from start until the coroutine exits.
-
-    Args:
-        user_id: Numeric identifier for this virtual user (used for logging).
-        config: Benchmark configuration including URL, method, think time settings.
-        stats: WorkerStats instance for recording request results.
-        connector: Shared aiohttp TCP connector with connection pooling.
-        stop_event: Cancellation signal; checked between requests and during think time.
-        start_time: Monotonic timestamp when the benchmark started, used to check
-            duration limits.
-        active_users: Shared dict with 'count' key tracking currently active users.
-            Incremented on entry, decremented in finally block.
-        rate_limiter: Optional rate limiter, applied only when think_time is 0
-            (otherwise think time naturally throttles request rate).
-
-    Raises:
-        asyncio.CancelledError: Handled internally; breaks the request loop cleanly.
-
-    Concurrency notes:
-        Think time uses asyncio.wait_for on the stop_event, allowing immediate
-        exit when the benchmark ends rather than sleeping through the full delay.
-    """
+    """Simulate a single virtual user with configurable think time."""
     req_headers = _build_request_headers(config)
-
-    expected_length: int | None = None
+    expected_length_ref: list[int | None] = [None]
     active_users["count"] += 1
-
-    session_kwargs: dict = {"connector": connector}
-    if config.latency_breakdown:
-        trace_config = create_trace_config(stats)
-        session_kwargs["trace_configs"] = [trace_config]
+    session_kwargs = _build_session_kwargs(connector, config, stats)
 
     try:
         async with aiohttp.ClientSession(**session_kwargs) as session:
@@ -592,76 +649,30 @@ async def user_worker(
                 if config.duration is not None and elapsed >= config.duration:
                     break
 
-                remaining = (config.duration - elapsed) if config.duration else config.timeout_sec
-                effective_timeout = min(config.timeout_sec, remaining + 1)
-
-                # Rate limiting for user workers: applies when think_time is 0
                 if rate_limiter is not None and config.think_time == 0:
                     await rate_limiter.acquire()
                     if stop_event.is_set():
                         break
 
+                effective_timeout = _calc_effective_timeout(config, start_time)
                 client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
                 request_url = make_url(config.url, config.random_param)
-
-                req_start = time.monotonic()
                 trace_ctx = {} if config.latency_breakdown else None
-                try:
-                    async with session.request(
-                        config.method,
-                        request_url,
-                        headers=req_headers,
-                        data=config.body,
-                        ssl=config.ssl_config.verify,
-                        timeout=client_timeout,
-                        trace_request_ctx=trace_ctx,
-                    ) as resp:
-                        data = await resp.read()
-                        latency = time.monotonic() - req_start
-                        stats.total_requests += 1
-                        stats.total_bytes += len(data)
-                        stats.latencies.append(latency)
-                        stats.status_codes[resp.status] += 1
 
-                        if config.verify_content_length:
-                            cl = resp.headers.get("Content-Length")
-                            if cl is not None:
-                                declared = int(cl)
-                                if expected_length is None:
-                                    expected_length = declared
-                                if declared != expected_length or len(data) != declared:
-                                    stats.content_length_errors += 1
-
-                        if resp.status >= 400:
-                            stats.errors += 1
-                            stats.error_types[f"HTTP {resp.status}"] += 1
-
-                except asyncio.CancelledError:
+                result = await _execute_request(
+                    session, config.method, request_url, req_headers, config.body,
+                    config.ssl_config.verify, client_timeout, stats, config,
+                    trace_ctx, expected_length_ref,
+                    log_prefix=f"User {user_id} ",
+                )
+                if result.cancelled:
                     break
-                except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                    latency = time.monotonic() - req_start
-                    stats.total_requests += 1
-                    stats.errors += 1
-                    error_name = type(e).__name__
-                    stats.error_types[error_name] += 1
-                    stats.latencies.append(latency)
-                    logger.warning("User %d request error: %s: %s", user_id, error_name, e)
 
-                # Record for timeline
                 now = time.monotonic()
                 stats.rps_timeline.append((now, 1))
 
-                # Think time: simulate user pause between requests
-                if config.think_time > 0 and not stop_event.is_set():
-                    jitter = config.think_time_jitter
-                    lo = config.think_time * (1 - jitter)
-                    hi = config.think_time * (1 + jitter)
-                    delay = random.uniform(lo, hi)
-                    try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                        break  # stop_event was set during think time
-                    except asyncio.TimeoutError:
-                        pass  # think time elapsed, continue
+                if await _think_time_wait(config.think_time, config.think_time_jitter, stop_event):
+                    break
     finally:
         active_users["count"] -= 1
 
@@ -676,38 +687,15 @@ async def scenario_worker(
     active_users: dict,
     request_counter: dict | None = None,
 ) -> None:
-    """Execute a scripted multi-step scenario in a loop.
-
-    Iterates through scenario steps sequentially, executing each HTTP request
-    with step-specific headers, body, and assertions. After completing all steps,
-    loops back to the first step. Continues until stop condition is met.
-
-    Args:
-        user_id: Numeric identifier for this scenario user.
-        config: Benchmark configuration; must have config.scenario set.
-        stats: WorkerStats for recording per-step latencies and overall results.
-        connector: Shared aiohttp TCP connector.
-        stop_event: Cancellation signal checked between steps.
-        start_time: Monotonic timestamp of benchmark start for duration checks.
-        active_users: Shared dict tracking active user count.
-        request_counter: Optional shared counter for request-count mode.
-
-    Raises:
-        asyncio.CancelledError: Handled internally; exits the scenario loop cleanly.
-
-    Concurrency notes:
-        Per-step latencies are tracked in stats.step_latencies[step_name] for
-        detailed per-step reporting. Think time between steps respects both
-        step-level and scenario-level think_time settings.
-    """
+    """Execute a scripted multi-step scenario in a loop."""
     scenario = config.scenario
     if not scenario:
         return
 
     base_headers = _build_request_headers(config)
-
     parsed = urlparse(config.url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
+    expected_length_ref: list[int | None] = [None]
 
     active_users["count"] += 1
     try:
@@ -727,14 +715,8 @@ async def scenario_worker(
                             return
                         request_counter["remaining"] -= 1
 
-                    remaining = (
-                        (config.duration - (time.monotonic() - start_time))
-                        if config.duration
-                        else config.timeout_sec
-                    )
-                    effective_timeout = min(config.timeout_sec, remaining + 1)
+                    effective_timeout = _calc_effective_timeout(config, start_time)
                     client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
-
                     request_url = make_url(f"{base_url}{step.path}", config.random_param)
 
                     req_headers = dict(base_headers)
@@ -752,63 +734,18 @@ async def scenario_worker(
                             body = step.body
 
                     step_name = step.name or f"{step.method} {step.path}"
-                    req_start = time.monotonic()
-                    try:
-                        async with session.request(
-                            step.method,
-                            request_url,
-                            headers=req_headers,
-                            data=body,
-                            ssl=config.ssl_config.verify,
-                            timeout=client_timeout,
-                        ) as resp:
-                            data = await resp.read()
-                            latency = time.monotonic() - req_start
-                            stats.total_requests += 1
-                            stats.total_bytes += len(data)
-                            stats.latencies.append(latency)
-                            stats.step_latencies[step_name].append(latency)
-                            stats.status_codes[resp.status] += 1
 
-                            assertion_failed = False
-                            if step.assert_status is not None and resp.status != step.assert_status:
-                                stats.errors += 1
-                                err_msg = (
-                                    f"AssertStatus: expected {step.assert_status},"
-                                    f" got {resp.status}"
-                                )
-                                stats.error_types[err_msg] += 1
-                                assertion_failed = True
-
-                            if step.assert_body_contains is not None:
-                                body_text = data.decode("utf-8", errors="replace")
-                                if step.assert_body_contains not in body_text:
-                                    stats.errors += 1
-                                    err_msg = f"AssertBody: '{step.assert_body_contains}' not found"
-                                    stats.error_types[err_msg] += 1
-                                    assertion_failed = True
-
-                            if not assertion_failed and resp.status >= 400:
-                                stats.errors += 1
-                                stats.error_types[f"HTTP {resp.status}"] += 1
-
-                    except asyncio.CancelledError:
+                    result = await _execute_request(
+                        session, step.method, request_url, req_headers, body,
+                        config.ssl_config.verify, client_timeout, stats, config,
+                        None, expected_length_ref,
+                        step_name=step_name,
+                        assert_status=step.assert_status,
+                        assert_body_contains=step.assert_body_contains,
+                        log_prefix=f"Scenario user {user_id} step '{step_name}' ",
+                    )
+                    if result.cancelled:
                         return
-                    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                        latency = time.monotonic() - req_start
-                        stats.total_requests += 1
-                        stats.errors += 1
-                        error_name = type(e).__name__
-                        stats.error_types[error_name] += 1
-                        stats.latencies.append(latency)
-                        stats.step_latencies[step_name].append(latency)
-                        logger.warning(
-                            "Scenario user %d step '%s' error: %s: %s",
-                            user_id,
-                            step_name,
-                            error_name,
-                            e,
-                        )
 
                     now = time.monotonic()
                     stats.rps_timeline.append((now, 1))
@@ -816,16 +753,8 @@ async def scenario_worker(
                     think = step.think_time if step.think_time is not None else scenario.think_time
                     if think <= 0 and config.think_time > 0:
                         think = config.think_time
-                    if think > 0 and not stop_event.is_set():
-                        jitter = config.think_time_jitter
-                        lo = think * (1 - jitter)
-                        hi = think * (1 + jitter)
-                        delay = random.uniform(lo, hi)
-                        try:
-                            await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                            return
-                        except asyncio.TimeoutError:
-                            pass
+                    if await _think_time_wait(think, config.think_time_jitter, stop_event):
+                        return
     finally:
         active_users["count"] -= 1
 
