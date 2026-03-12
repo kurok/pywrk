@@ -613,20 +613,19 @@ Scale benchmarks across multiple machines by running one master and multiple wor
 
 ```bash
 # On the master node: coordinate 3 workers
-python pywrkr.py --master --expect-workers 3 --bind 0.0.0.0 --port 9000 \
-    -c 300 -d 60 http://target:8080/
+python pywrkr.py http://target:8080/ --master --expect-workers 3 -c 300 -d 60
 
 # On each worker node: connect back to the master
-python pywrkr.py --worker --bind master-host --port 9000
+python pywrkr.py --worker master-host:9220
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--master` | Run as distributed master (coordinates workers) |
-| `--worker` | Run as distributed worker (connects to master) |
+| `--worker HOST:PORT` | Run as distributed worker, connecting to master at HOST:PORT |
 | `--expect-workers` | Number of workers the master should wait for before starting |
-| `--bind` | Address to bind/connect (default: `0.0.0.0` for master, master host for worker) |
-| `--port` | Port for master/worker communication (default: `9000`) |
+| `--bind` | Master bind address (default: `0.0.0.0`) |
+| `--port` | Master listen port (default: `9220`) |
 
 The master splits the workload evenly across workers, collects results, and produces a single aggregated report.
 
@@ -676,6 +675,10 @@ The test suite includes unit and integration tests covering:
 - User simulation integration tests (think time, ramp-up, jitter, error handling, output formats)
 - Autofind integration tests (healthy server, error endpoint, threshold enforcement, binary search, JSON output, summary table)
 - HAR import tests (parsing, filtering, scenario generation)
+- Reporting module tests (formatting, percentile computation, threshold evaluation, CSV/JSON output)
+- Multi-URL mode tests (URL file loading, entry parsing)
+- Distributed mode tests (config/stats serialization, merge operations, TCP protocol)
+- Worker utility tests (URL construction, headers, stats merging, breakdown aggregation)
 
 ## License
 
