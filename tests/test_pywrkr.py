@@ -2523,7 +2523,10 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [self._make_stats()]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", users=50, duration=60.0)
         start_time = time.monotonic() - 10.0
-        active_users = {"count": 50}
+        from pywrkr.config import ActiveUsers
+
+        active_users = ActiveUsers()
+        active_users.count = 50
         dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
         panel = dashboard._build_display()
         from rich.panel import Panel
