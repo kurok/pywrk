@@ -3,7 +3,7 @@
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pywrkr.config import BenchmarkConfig, WorkerStats
 from pywrkr.reporting import (
@@ -78,32 +78,13 @@ async def run_multi_url(
         logger.info("  Endpoint %s/%s: %s %s", i, len(url_entries), entry.method, entry.url)
         logger.info("%s\n", sep)
 
-        # Clone config with this URL and method
-        config = BenchmarkConfig(
+        # Clone config with this URL and method, preserving all fields
+        config = replace(
+            base_config,
             url=entry.url,
-            connections=base_config.connections,
-            duration=base_config.duration,
-            num_requests=base_config.num_requests,
-            threads=base_config.threads,
             method=entry.method,
             headers=dict(base_config.headers),
-            body=base_config.body,
-            timeout_sec=base_config.timeout_sec,
-            keepalive=base_config.keepalive,
-            basic_auth=base_config.basic_auth,
             cookies=list(base_config.cookies),
-            verify_content_length=base_config.verify_content_length,
-            verbosity=base_config.verbosity,
-            random_param=base_config.random_param,
-            rate=base_config.rate,
-            rate_ramp=base_config.rate_ramp,
-            latency_breakdown=base_config.latency_breakdown,
-            users=base_config.users,
-            ramp_up=base_config.ramp_up,
-            think_time=base_config.think_time,
-            think_time_jitter=base_config.think_time_jitter,
-            thresholds=base_config.thresholds,
-            tags=base_config.tags,
         )
 
         start = time.monotonic()

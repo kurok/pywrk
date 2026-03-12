@@ -688,6 +688,91 @@ class TestMultiUrlLoading(unittest.TestCase):
             pywrkr.load_url_file("/nonexistent/urls.txt")
 
 
+class TestMultiUrlConfigCloning(unittest.TestCase):
+    """Test that multi-URL config cloning preserves all fields."""
+
+    def test_all_config_fields_preserved(self):
+        """Verify dataclasses.replace() preserves all BenchmarkConfig fields."""
+        from dataclasses import fields, replace
+
+        base = BenchmarkConfig(
+            url="http://original.com",
+            connections=50,
+            duration=30.0,
+            num_requests=1000,
+            threads=8,
+            method="POST",
+            headers={"X-Custom": "val"},
+            body=b"test body",
+            timeout_sec=15.0,
+            keepalive=False,
+            basic_auth="user:pass",
+            cookies=["session=abc"],
+            verify_content_length=True,
+            verbosity=2,
+            random_param=True,
+            rate=100.0,
+            rate_ramp=200.0,
+            latency_breakdown=True,
+            users=50,
+            ramp_up=5.0,
+            think_time=1.0,
+            think_time_jitter=0.3,
+            ssl_config=SSLConfig(verify=True, ca_bundle="/path/to/ca.pem"),
+            tags={"env": "staging"},
+            otel_endpoint="http://otel:4318",
+            prom_remote_write="http://prom:9090/write",
+            html_report="/tmp/report.html",
+        )
+
+        # Simulate what run_multi_url does
+        cloned = replace(
+            base,
+            url="http://new-target.com",
+            method="PUT",
+            headers=dict(base.headers),
+            cookies=list(base.cookies),
+        )
+
+        # Check overridden fields
+        self.assertEqual(cloned.url, "http://new-target.com")
+        self.assertEqual(cloned.method, "PUT")
+
+        # Check all other fields are preserved
+        self.assertEqual(cloned.connections, 50)
+        self.assertEqual(cloned.duration, 30.0)
+        self.assertEqual(cloned.num_requests, 1000)
+        self.assertEqual(cloned.threads, 8)
+        self.assertEqual(cloned.body, b"test body")
+        self.assertEqual(cloned.timeout_sec, 15.0)
+        self.assertFalse(cloned.keepalive)
+        self.assertEqual(cloned.basic_auth, "user:pass")
+        self.assertEqual(cloned.cookies, ["session=abc"])
+        self.assertTrue(cloned.verify_content_length)
+        self.assertEqual(cloned.verbosity, 2)
+        self.assertTrue(cloned.random_param)
+        self.assertEqual(cloned.rate, 100.0)
+        self.assertEqual(cloned.rate_ramp, 200.0)
+        self.assertTrue(cloned.latency_breakdown)
+        self.assertEqual(cloned.users, 50)
+        self.assertEqual(cloned.ramp_up, 5.0)
+        self.assertEqual(cloned.think_time, 1.0)
+        self.assertEqual(cloned.think_time_jitter, 0.3)
+        # These were previously dropped:
+        self.assertTrue(cloned.ssl_config.verify)
+        self.assertEqual(cloned.ssl_config.ca_bundle, "/path/to/ca.pem")
+        self.assertEqual(cloned.tags, {"env": "staging"})
+        self.assertEqual(cloned.otel_endpoint, "http://otel:4318")
+        self.assertEqual(cloned.prom_remote_write, "http://prom:9090/write")
+        self.assertEqual(cloned.html_report, "/tmp/report.html")
+
+        # Verify headers and cookies are independent copies
+        cloned.headers["new"] = "added"
+        self.assertNotIn("new", base.headers)
+        cloned.cookies.append("extra=1")
+        self.assertNotIn("extra=1", base.cookies)
+
+
 # ---------------------------------------------------------------------------
 # Integration: connection pool behavior
 # ---------------------------------------------------------------------------
