@@ -9,6 +9,7 @@ import unittest
 from pywrkr.har_import import (
     HarEntry,
     HarImportConfig,
+    _compute_think_times,
     convert_har,
     filter_entries,
     har_to_scenario,
@@ -29,6 +30,7 @@ def _make_entry(
     time_ms=100.0,
     headers=None,
     post_data=None,
+    started_datetime=None,
 ):
     """Build a single HAR entry dict."""
     entry = {
@@ -44,6 +46,8 @@ def _make_entry(
             "content": {"size": 100, "mimeType": "application/json"},
         },
     }
+    if started_datetime:
+        entry["startedDateTime"] = started_datetime
     if post_data:
         entry["request"]["postData"] = post_data
     return entry
@@ -130,6 +134,17 @@ class TestParseHar(unittest.TestCase):
         try:
             entries = parse_har(path)
             self.assertEqual(len(entries), 0)
+        finally:
+            os.unlink(path)
+
+    def test_parse_extracts_started_datetime(self):
+        har = _make_har([
+            _make_entry(url="https://example.com/a", started_datetime="2025-01-15T10:00:00.000Z"),
+        ])
+        path = _write_har(har)
+        try:
+            entries = parse_har(path)
+            self.assertEqual(entries[0].started_datetime, "2025-01-15T10:00:00.000Z")
         finally:
             os.unlink(path)
 
@@ -269,16 +284,30 @@ class TestHarToScenario(unittest.TestCase):
         # 500 status should not get assertion (only 2xx/3xx)
         self.assertNotIn("assert_status", scenario["steps"][1])
 
-    def test_think_times(self):
+    def test_think_times_with_timestamps(self):
+        # Entry 1 starts at T=0, takes 200ms, Entry 2 starts at T=500ms
+        # Think time = 500ms - (0ms + 200ms) = 300ms = 0.3s
+        entries = [
+            HarEntry(url="https://api.example.com/a", method="GET", time_ms=200,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://api.example.com/b", method="GET", time_ms=100,
+                     started_datetime="2025-01-15T10:00:00.500Z"),
+        ]
+        config = HarImportConfig()
+        scenario = har_to_scenario(entries, config)
+        self.assertNotIn("think_time", scenario["steps"][0])
+        self.assertEqual(scenario["steps"][1]["think_time"], 0.3)
+
+    def test_think_times_fallback_without_timestamps(self):
+        # Without timestamps, falls back to using previous entry duration
         entries = [
             HarEntry(url="https://api.example.com/a", method="GET", time_ms=200),
             HarEntry(url="https://api.example.com/b", method="GET", time_ms=100),
         ]
         config = HarImportConfig()
         scenario = har_to_scenario(entries, config)
-        # First step has no think time
         self.assertNotIn("think_time", scenario["steps"][0])
-        # Second step has think time derived from first entry's duration
+        # Fallback: uses previous entry duration (200ms = 0.2s)
         self.assertEqual(scenario["steps"][1]["think_time"], 0.2)
 
     def test_no_think_time(self):
@@ -292,13 +321,25 @@ class TestHarToScenario(unittest.TestCase):
         self.assertNotIn("think_time", scenario["steps"][1])
 
     def test_think_time_multiplier(self):
+        # With timestamps: gap = 2000ms - (0 + 1000ms) = 1000ms, * 0.5 = 500ms
+        entries = [
+            HarEntry(url="https://api.example.com/a", method="GET", time_ms=1000,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://api.example.com/b", method="GET", time_ms=100,
+                     started_datetime="2025-01-15T10:00:02.000Z"),
+        ]
+        config = HarImportConfig(think_time_multiplier=0.5)
+        scenario = har_to_scenario(entries, config)
+        self.assertEqual(scenario["steps"][1]["think_time"], 0.5)
+
+    def test_think_time_multiplier_fallback(self):
+        # Without timestamps: fallback uses duration 1000ms * 0.5 = 0.5s
         entries = [
             HarEntry(url="https://api.example.com/a", method="GET", time_ms=1000),
             HarEntry(url="https://api.example.com/b", method="GET", time_ms=100),
         ]
         config = HarImportConfig(think_time_multiplier=0.5)
         scenario = har_to_scenario(entries, config)
-        # 1000ms * 0.5 = 500ms = 0.5s
         self.assertEqual(scenario["steps"][1]["think_time"], 0.5)
 
     def test_empty_entries_raises(self):
@@ -342,6 +383,68 @@ class TestHarToScenario(unittest.TestCase):
         # Skipped headers should not be present
         self.assertNotIn("user-agent", h)
         self.assertNotIn("host", h)
+
+
+class TestComputeThinkTimes(unittest.TestCase):
+    """Tests for _compute_think_times() with timestamp-based calculation."""
+
+    def test_single_entry(self):
+        entries = [HarEntry(url="https://a.com/", time_ms=100,
+                            started_datetime="2025-01-15T10:00:00.000Z")]
+        result = _compute_think_times(entries, 1.0)
+        self.assertEqual(result, [0.0])
+
+    def test_empty(self):
+        self.assertEqual(_compute_think_times([], 1.0), [])
+
+    def test_overlapping_requests_clamps_to_zero(self):
+        # Entry 2 starts before entry 1 finishes -> think time should be 0
+        entries = [
+            HarEntry(url="https://a.com/1", time_ms=500,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://a.com/2", time_ms=100,
+                     started_datetime="2025-01-15T10:00:00.200Z"),
+        ]
+        result = _compute_think_times(entries, 1.0)
+        self.assertEqual(result[0], 0.0)
+        self.assertEqual(result[1], 0.0)  # clamped: 200ms - 500ms < 0
+
+    def test_correct_gap_calculation(self):
+        # Entry 1: starts T=0, duration=100ms -> ends T=100ms
+        # Entry 2: starts T=300ms -> gap = 200ms
+        # Entry 3: starts T=500ms, entry 2 duration=50ms -> ends T=350ms -> gap = 150ms
+        entries = [
+            HarEntry(url="https://a.com/1", time_ms=100,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://a.com/2", time_ms=50,
+                     started_datetime="2025-01-15T10:00:00.300Z"),
+            HarEntry(url="https://a.com/3", time_ms=80,
+                     started_datetime="2025-01-15T10:00:00.500Z"),
+        ]
+        result = _compute_think_times(entries, 1.0)
+        self.assertEqual(result[0], 0.0)
+        self.assertEqual(result[1], 0.2)
+        self.assertEqual(result[2], 0.15)
+
+    def test_think_time_capped_at_30s(self):
+        entries = [
+            HarEntry(url="https://a.com/1", time_ms=100,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://a.com/2", time_ms=100,
+                     started_datetime="2025-01-15T10:01:00.000Z"),  # 60s gap
+        ]
+        result = _compute_think_times(entries, 1.0)
+        self.assertEqual(result[1], 30.0)
+
+    def test_multiplier_applied(self):
+        entries = [
+            HarEntry(url="https://a.com/1", time_ms=100,
+                     started_datetime="2025-01-15T10:00:00.000Z"),
+            HarEntry(url="https://a.com/2", time_ms=100,
+                     started_datetime="2025-01-15T10:00:01.100Z"),  # gap = 1000ms
+        ]
+        result = _compute_think_times(entries, 0.5)
+        self.assertEqual(result[1], 0.5)  # 1.0s * 0.5 = 0.5s
 
 
 class TestHarToUrlFile(unittest.TestCase):

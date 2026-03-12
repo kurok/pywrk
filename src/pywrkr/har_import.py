@@ -10,6 +10,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 
@@ -24,6 +25,7 @@ class HarEntry:
     content_type: str | None = None
     status: int = 0
     time_ms: float = 0.0
+    started_datetime: str = ""  # ISO 8601 timestamp from HAR startedDateTime
 
 
 @dataclass
@@ -157,17 +159,18 @@ def parse_har(path: str) -> list[HarEntry]:
         # Timing
         time_ms = entry.get("time", 0.0)
 
-        entries.append(
-            HarEntry(
-                url=url,
-                method=method,
-                headers=headers,
-                body=body if body else None,
-                content_type=content_type,
-                status=status,
-                time_ms=time_ms,
-            )
-        )
+        started_datetime = entry.get("startedDateTime", "")
+
+        entries.append(HarEntry(
+            url=url,
+            method=method,
+            headers=headers,
+            body=body if body else None,
+            content_type=content_type,
+            status=status,
+            time_ms=time_ms,
+            started_datetime=started_datetime,
+        ))
 
     return entries
 
@@ -217,6 +220,24 @@ def _build_step_headers(
     return {name: value for name, value in entry.headers.items() if name.lower() not in skip}
 
 
+def _parse_iso_datetime(s: str) -> float | None:
+    """Parse an ISO 8601 datetime string to a Unix timestamp in seconds.
+
+    Returns None if parsing fails.
+    """
+    if not s:
+        return None
+    try:
+        # Handle common HAR formats: with/without timezone, with/without fractional seconds
+        s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def _compute_think_times(
     entries: list[HarEntry],
     multiplier: float,
@@ -224,22 +245,36 @@ def _compute_think_times(
     """Compute inter-request think times from HAR timing data.
 
     Returns a list of think times (one per entry). The first entry has 0.
-    Think times are derived from the gap between consecutive entries.
+    Think times are the gap between when a request starts and when the
+    previous request finished (start + duration), i.e.:
+        gap = start_time[i] - (start_time[i-1] + duration[i-1])
+
+    Falls back to using entry durations if timestamps are unavailable.
     """
     if len(entries) <= 1:
         return [0.0] * len(entries)
 
+    # Try to use actual startedDateTime timestamps
+    parsed_ts = [_parse_iso_datetime(e.started_datetime) for e in entries]
+    has_timestamps = all(t is not None for t in parsed_ts)
+    timestamps: list[float] = [t for t in parsed_ts if t is not None] if has_timestamps else []
+
     think_times = [0.0]
-    # Use cumulative time to estimate gaps
     for i in range(1, len(entries)):
-        prev_time = entries[i - 1].time_ms
-        gap = max(0.0, prev_time)  # milliseconds
-        think_sec = (gap / 1000.0) * multiplier
+        if has_timestamps:
+            # gap = when this request started - when previous request finished
+            prev_end = timestamps[i - 1] + (entries[i - 1].time_ms / 1000.0)
+            gap_sec = timestamps[i] - prev_end
+        else:
+            # Fallback: use previous entry duration as rough gap estimate
+            gap_sec = entries[i - 1].time_ms / 1000.0
+
+        gap_sec = max(0.0, gap_sec) * multiplier
         # Cap think time to something reasonable (max 30s)
-        think_sec = min(think_sec, 30.0)
+        gap_sec = min(gap_sec, 30.0)
         # Round to 2 decimal places
-        think_sec = round(think_sec, 2)
-        think_times.append(think_sec)
+        gap_sec = round(gap_sec, 2)
+        think_times.append(gap_sec)
 
     return think_times
 

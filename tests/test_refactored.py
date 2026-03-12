@@ -430,6 +430,102 @@ class TestDistributedSerialization(unittest.TestCase):
         self.assertEqual(deserialized.body, config.body)
         self.assertEqual(deserialized.basic_auth, config.basic_auth)
 
+    def test_config_round_trip_all_fields(self):
+        """Verify all config fields survive serialization round-trip."""
+        from pywrkr.config import Scenario, ScenarioStep, Threshold
+        config = BenchmarkConfig(
+            url="http://example.com/api",
+            connections=50,
+            duration=30.0,
+            num_requests=5000,
+            threads=8,
+            method="POST",
+            headers={"X-Custom": "val"},
+            body=b'{"key": "value"}',
+            timeout_sec=15.0,
+            keepalive=False,
+            basic_auth="admin:secret",
+            cookies=["sid=xyz"],
+            verify_content_length=True,
+            verbosity=3,
+            random_param=True,
+            rate=500.0,
+            rate_ramp=1000.0,
+            latency_breakdown=True,
+            users=100,
+            ramp_up=10.0,
+            think_time=2.0,
+            think_time_jitter=0.3,
+            ssl_config=SSLConfig(verify=True, ca_bundle="/path/ca.pem"),
+            tags={"env": "prod", "region": "us-east"},
+            otel_endpoint="http://otel:4318",
+            prom_remote_write="http://prom:9090/write",
+            thresholds=[Threshold(metric="p95", operator="<", value=0.3, raw_expr="p95 < 300ms")],
+            scenario=Scenario(name="Test", think_time=1.5, steps=[
+                ScenarioStep(path="/api/v1", method="GET", name="List items"),
+                ScenarioStep(path="/api/v1", method="POST", body={"key": "val"},
+                             headers={"X-Step": "1"}, assert_status=201,
+                             assert_body_contains="created", think_time=0.5, name="Create item"),
+            ]),
+            html_report="/tmp/report.html",
+            csv_output="/tmp/out.csv",
+            json_output="/tmp/out.json",
+            html_output=True,
+            live_dashboard=True,
+        )
+        serialized = pywrkr._serialize_config(config)
+        d = pywrkr._deserialize_config(serialized)
+
+        self.assertEqual(d.url, config.url)
+        self.assertEqual(d.connections, 50)
+        self.assertEqual(d.duration, 30.0)
+        self.assertEqual(d.num_requests, 5000)
+        self.assertEqual(d.threads, 8)
+        self.assertEqual(d.method, "POST")
+        self.assertEqual(d.headers, {"X-Custom": "val"})
+        self.assertEqual(d.body, b'{"key": "value"}')
+        self.assertEqual(d.timeout_sec, 15.0)
+        self.assertFalse(d.keepalive)
+        self.assertEqual(d.basic_auth, "admin:secret")
+        self.assertEqual(d.cookies, ["sid=xyz"])
+        self.assertTrue(d.verify_content_length)
+        self.assertEqual(d.verbosity, 3)
+        self.assertTrue(d.random_param)
+        self.assertEqual(d.rate, 500.0)
+        self.assertEqual(d.rate_ramp, 1000.0)
+        self.assertTrue(d.latency_breakdown)
+        self.assertEqual(d.users, 100)
+        self.assertEqual(d.ramp_up, 10.0)
+        self.assertEqual(d.think_time, 2.0)
+        self.assertEqual(d.think_time_jitter, 0.3)
+        # Previously missing fields:
+        self.assertTrue(d.ssl_config.verify)
+        self.assertEqual(d.ssl_config.ca_bundle, "/path/ca.pem")
+        self.assertEqual(d.tags, {"env": "prod", "region": "us-east"})
+        self.assertEqual(d.otel_endpoint, "http://otel:4318")
+        self.assertEqual(d.prom_remote_write, "http://prom:9090/write")
+        self.assertEqual(len(d.thresholds), 1)
+        self.assertEqual(d.thresholds[0].metric, "p95")
+        self.assertEqual(d.thresholds[0].operator, "<")
+        self.assertAlmostEqual(d.thresholds[0].value, 0.3)
+        self.assertEqual(d.thresholds[0].raw_expr, "p95 < 300ms")
+        self.assertIsNotNone(d.scenario)
+        self.assertEqual(d.scenario.name, "Test")
+        self.assertEqual(d.scenario.think_time, 1.5)
+        self.assertEqual(len(d.scenario.steps), 2)
+        self.assertEqual(d.scenario.steps[0].path, "/api/v1")
+        self.assertEqual(d.scenario.steps[0].method, "GET")
+        self.assertEqual(d.scenario.steps[1].method, "POST")
+        self.assertEqual(d.scenario.steps[1].body, {"key": "val"})
+        self.assertEqual(d.scenario.steps[1].assert_status, 201)
+        self.assertEqual(d.scenario.steps[1].assert_body_contains, "created")
+        self.assertEqual(d.scenario.steps[1].think_time, 0.5)
+        self.assertEqual(d.html_report, "/tmp/report.html")
+        self.assertEqual(d.csv_output, "/tmp/out.csv")
+        self.assertEqual(d.json_output, "/tmp/out.json")
+        self.assertTrue(d.html_output)
+        self.assertTrue(d.live_dashboard)
+
     def test_stats_round_trip(self):
         ws = WorkerStats()
         ws.total_requests = 1000
@@ -448,6 +544,49 @@ class TestDistributedSerialization(unittest.TestCase):
         self.assertEqual(deserialized.errors, 5)
         self.assertEqual(deserialized.latencies, [0.01, 0.02, 0.03])
         self.assertEqual(deserialized.status_codes[200], 995)
+
+    def test_stats_round_trip_all_fields(self):
+        """Verify step_latencies, breakdowns, and error_types survive round-trip."""
+        from pywrkr.config import LatencyBreakdown
+        ws = WorkerStats()
+        ws.total_requests = 100
+        ws.total_bytes = 50000
+        ws.errors = 2
+        ws.content_length_errors = 1
+        ws.latencies = [0.1, 0.2, 0.3]
+        ws.error_types["TimeoutError"] = 1
+        ws.error_types["HTTP 500"] = 1
+        ws.status_codes[200] = 98
+        ws.status_codes[500] = 2
+        ws.rps_timeline = [(1.0, 50), (2.0, 50)]
+        ws.step_latencies["GET /api"].extend([0.1, 0.15])
+        ws.step_latencies["POST /api"].extend([0.2])
+        ws.breakdowns = [
+            LatencyBreakdown(dns=0.01, connect=0.02, tls=0.03, ttfb=0.05, transfer=0.01, is_reused=False),
+            LatencyBreakdown(dns=0.0, connect=0.0, tls=0.0, ttfb=0.03, transfer=0.005, is_reused=True),
+        ]
+
+        serialized = pywrkr._serialize_stats(ws)
+        d = pywrkr._deserialize_stats(serialized)
+
+        self.assertEqual(d.total_requests, 100)
+        self.assertEqual(d.total_bytes, 50000)
+        self.assertEqual(d.errors, 2)
+        self.assertEqual(d.content_length_errors, 1)
+        self.assertEqual(d.latencies, [0.1, 0.2, 0.3])
+        self.assertEqual(d.error_types["TimeoutError"], 1)
+        self.assertEqual(d.error_types["HTTP 500"], 1)
+        self.assertEqual(d.status_codes[200], 98)
+        self.assertEqual(d.status_codes[500], 2)
+        self.assertEqual(len(d.rps_timeline), 2)
+        # Previously missing:
+        self.assertEqual(d.step_latencies["GET /api"], [0.1, 0.15])
+        self.assertEqual(d.step_latencies["POST /api"], [0.2])
+        self.assertEqual(len(d.breakdowns), 2)
+        self.assertAlmostEqual(d.breakdowns[0].dns, 0.01)
+        self.assertAlmostEqual(d.breakdowns[0].connect, 0.02)
+        self.assertFalse(d.breakdowns[0].is_reused)
+        self.assertTrue(d.breakdowns[1].is_reused)
 
     def test_merge_worker_stats(self):
         ws1 = WorkerStats()
@@ -537,6 +676,91 @@ class TestMultiUrlLoading(unittest.TestCase):
     def test_load_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
             pywrkr.load_url_file("/nonexistent/urls.txt")
+
+
+class TestMultiUrlConfigCloning(unittest.TestCase):
+    """Test that multi-URL config cloning preserves all fields."""
+
+    def test_all_config_fields_preserved(self):
+        """Verify dataclasses.replace() preserves all BenchmarkConfig fields."""
+        from dataclasses import fields, replace
+
+        base = BenchmarkConfig(
+            url="http://original.com",
+            connections=50,
+            duration=30.0,
+            num_requests=1000,
+            threads=8,
+            method="POST",
+            headers={"X-Custom": "val"},
+            body=b"test body",
+            timeout_sec=15.0,
+            keepalive=False,
+            basic_auth="user:pass",
+            cookies=["session=abc"],
+            verify_content_length=True,
+            verbosity=2,
+            random_param=True,
+            rate=100.0,
+            rate_ramp=200.0,
+            latency_breakdown=True,
+            users=50,
+            ramp_up=5.0,
+            think_time=1.0,
+            think_time_jitter=0.3,
+            ssl_config=SSLConfig(verify=True, ca_bundle="/path/to/ca.pem"),
+            tags={"env": "staging"},
+            otel_endpoint="http://otel:4318",
+            prom_remote_write="http://prom:9090/write",
+            html_report="/tmp/report.html",
+        )
+
+        # Simulate what run_multi_url does
+        cloned = replace(
+            base,
+            url="http://new-target.com",
+            method="PUT",
+            headers=dict(base.headers),
+            cookies=list(base.cookies),
+        )
+
+        # Check overridden fields
+        self.assertEqual(cloned.url, "http://new-target.com")
+        self.assertEqual(cloned.method, "PUT")
+
+        # Check all other fields are preserved
+        self.assertEqual(cloned.connections, 50)
+        self.assertEqual(cloned.duration, 30.0)
+        self.assertEqual(cloned.num_requests, 1000)
+        self.assertEqual(cloned.threads, 8)
+        self.assertEqual(cloned.body, b"test body")
+        self.assertEqual(cloned.timeout_sec, 15.0)
+        self.assertFalse(cloned.keepalive)
+        self.assertEqual(cloned.basic_auth, "user:pass")
+        self.assertEqual(cloned.cookies, ["session=abc"])
+        self.assertTrue(cloned.verify_content_length)
+        self.assertEqual(cloned.verbosity, 2)
+        self.assertTrue(cloned.random_param)
+        self.assertEqual(cloned.rate, 100.0)
+        self.assertEqual(cloned.rate_ramp, 200.0)
+        self.assertTrue(cloned.latency_breakdown)
+        self.assertEqual(cloned.users, 50)
+        self.assertEqual(cloned.ramp_up, 5.0)
+        self.assertEqual(cloned.think_time, 1.0)
+        self.assertEqual(cloned.think_time_jitter, 0.3)
+        # These were previously dropped:
+        self.assertTrue(cloned.ssl_config.verify)
+        self.assertEqual(cloned.ssl_config.ca_bundle, "/path/to/ca.pem")
+        self.assertEqual(cloned.tags, {"env": "staging"})
+        self.assertEqual(cloned.otel_endpoint, "http://otel:4318")
+        self.assertEqual(cloned.prom_remote_write, "http://prom:9090/write")
+        self.assertEqual(cloned.html_report, "/tmp/report.html")
+
+        # Verify headers and cookies are independent copies
+        cloned.headers["new"] = "added"
+        self.assertNotIn("new", base.headers)
+        cloned.cookies.append("extra=1")
+        self.assertNotIn("extra=1", base.cookies)
 
 
 # ---------------------------------------------------------------------------
