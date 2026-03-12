@@ -15,6 +15,7 @@ from collections import defaultdict
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
@@ -5042,6 +5043,104 @@ class TestMultiUrlCLIArgs(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 2)
         finally:
             os.unlink(url_file)
+
+
+class TestConnectionPoolStrategy(AioHTTPTestCase):
+    """Tests that connection pool sharing works correctly."""
+
+    async def get_application(self):
+        app = web.Application()
+
+        async def handle(request):
+            return web.Response(text="ok")
+
+        app.router.add_get("/", handle)
+        return app
+
+    def _url(self, path):
+        return f"http://localhost:{self.server.port}{path}"
+
+    async def test_benchmark_uses_single_shared_connector(self):
+        """run_benchmark should create one TCPConnector with limit=connections."""
+        original_tcp_connector = aiohttp.TCPConnector
+        created_connectors = []
+
+        class SpyTCPConnector(original_tcp_connector):
+            def __init__(self, *args, **kwargs):
+                created_connectors.append(kwargs.get("limit"))
+                super().__init__(*args, **kwargs)
+
+        with patch("pywrkr.workers.aiohttp.TCPConnector", SpyTCPConnector):
+            config = pywrkr.BenchmarkConfig(
+                url=self._url("/"),
+                connections=8,
+                duration=1.0,
+                threads=4,
+                timeout_sec=5,
+            )
+            with patch("sys.stdout", new_callable=StringIO):
+                stats, _ = await pywrkr.run_benchmark(config)
+
+        # Should create exactly 1 connector, not 4 (one per thread group)
+        self.assertEqual(len(created_connectors), 1)
+        # The single connector should have limit equal to total connections
+        self.assertEqual(created_connectors[0], 8)
+        self.assertGreater(stats.total_requests, 0)
+
+    async def test_user_simulation_connector_limit_capped(self):
+        """run_user_simulation connector limit should be min(users, connections)."""
+        original_tcp_connector = aiohttp.TCPConnector
+        created_connectors = []
+
+        class SpyTCPConnector(original_tcp_connector):
+            def __init__(self, *args, **kwargs):
+                created_connectors.append(kwargs.get("limit"))
+                super().__init__(*args, **kwargs)
+
+        with patch("pywrkr.workers.aiohttp.TCPConnector", SpyTCPConnector):
+            config = pywrkr.BenchmarkConfig(
+                url=self._url("/"),
+                users=50,
+                connections=10,  # default
+                duration=1.0,
+                think_time=0.1,
+                ramp_up=0.0,
+                timeout_sec=5,
+            )
+            with patch("sys.stdout", new_callable=StringIO):
+                stats, _ = await pywrkr.run_user_simulation(config)
+
+        self.assertEqual(len(created_connectors), 1)
+        # Should be min(50, 10) = 10, not 50
+        self.assertEqual(created_connectors[0], 10)
+        self.assertGreater(stats.total_requests, 0)
+
+    async def test_user_simulation_connector_limit_when_users_less_than_connections(self):
+        """When users < connections, limit should equal users."""
+        original_tcp_connector = aiohttp.TCPConnector
+        created_connectors = []
+
+        class SpyTCPConnector(original_tcp_connector):
+            def __init__(self, *args, **kwargs):
+                created_connectors.append(kwargs.get("limit"))
+                super().__init__(*args, **kwargs)
+
+        with patch("pywrkr.workers.aiohttp.TCPConnector", SpyTCPConnector):
+            config = pywrkr.BenchmarkConfig(
+                url=self._url("/"),
+                users=3,
+                connections=10,
+                duration=1.0,
+                think_time=0.0,
+                ramp_up=0.0,
+                timeout_sec=5,
+            )
+            with patch("sys.stdout", new_callable=StringIO):
+                stats, _ = await pywrkr.run_user_simulation(config)
+
+        self.assertEqual(len(created_connectors), 1)
+        # Should be min(3, 10) = 3
+        self.assertEqual(created_connectors[0], 3)
 
 
 if __name__ == "__main__":
