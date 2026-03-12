@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pywrkr"
-version = "1.1.5"
+version = "1.2.0"
 description = "Python HTTP benchmarking tool with extended statistics, inspired by wrk and Apache ab"
 readme = "README.md"
 license = {text = "MIT"}
