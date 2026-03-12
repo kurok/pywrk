@@ -41,9 +41,7 @@ class SineProfile(TrafficProfile):
 
     def __init__(self, cycles: float = 2.0, min_factor: float = 0.1):
         if not (0 <= min_factor <= 1):
-            raise ValueError(
-                f"SineProfile min_factor must be between 0 and 1, got {min_factor}"
-            )
+            raise ValueError(f"SineProfile min_factor must be between 0 and 1, got {min_factor}")
         self.cycles = cycles
         self.min_factor = min_factor
 
@@ -160,9 +158,7 @@ class SpikeProfile(TrafficProfile):
         baseline: float = 0.2,
     ):
         if interval <= 0:
-            raise ValueError(
-                f"SpikeProfile interval must be greater than 0, got {interval}"
-            )
+            raise ValueError(f"SpikeProfile interval must be greater than 0, got {interval}")
         self.interval = interval
         self.spike_dur = spike_dur
         self.multiplier = multiplier

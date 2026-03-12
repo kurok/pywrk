@@ -1,9 +1,11 @@
 """Tests for parameter validation (issue #7)."""
 
+from unittest.mock import patch
+
 import pytest
 
+from pywrkr.main import _build_parser, _parse_and_validate_args
 from pywrkr.traffic_profiles import SineProfile, SpikeProfile, StepProfile
-
 
 # ---------------------------------------------------------------------------
 # Traffic profile constructor validation
@@ -68,10 +70,6 @@ class TestStepProfileValidation:
 # CLI argument validation (via _parse_and_validate_args)
 # ---------------------------------------------------------------------------
 
-from unittest.mock import patch
-import argparse
-from pywrkr.main import _build_parser, _parse_and_validate_args
-
 
 def _parse(cli_args: list[str]):
     """Helper: parse CLI args and run validation, returning (config, args)."""
@@ -115,7 +113,9 @@ class TestAutofindValidation:
 
     def test_max_users_equal_start_users(self):
         with pytest.raises(SystemExit):
-            _parse(["--autofind", "--start-users", "100", "--max-users", "100", "http://localhost/"])
+            _parse(
+                ["--autofind", "--start-users", "100", "--max-users", "100", "http://localhost/"]
+            )
 
     def test_step_multiplier_one(self):
         with pytest.raises(SystemExit):
@@ -130,10 +130,18 @@ class TestAutofindValidation:
         # that validation passes by checking no SystemExit before run_autofind.
         # We mock run_autofind to prevent actual execution.
         with patch("pywrkr.main.run_autofind"):
-            config, args = _parse([
-                "--autofind", "--start-users", "10", "--max-users", "100",
-                "--step-multiplier", "2.0", "http://localhost/"
-            ])
+            config, args = _parse(
+                [
+                    "--autofind",
+                    "--start-users",
+                    "10",
+                    "--max-users",
+                    "100",
+                    "--step-multiplier",
+                    "2.0",
+                    "http://localhost/",
+                ]
+            )
             assert args.start_users == 10
             assert args.max_users == 100
             assert args.step_multiplier == 2.0
