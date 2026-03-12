@@ -262,10 +262,21 @@ async def _send_msg(writer: asyncio.StreamWriter, obj: dict) -> None:
 
 
 async def _recv_msg(reader: asyncio.StreamReader) -> dict:
-    """Receive a length-prefixed JSON message."""
-    length_bytes = await reader.readexactly(4)
-    length = int.from_bytes(length_bytes, "big")
-    payload = await reader.readexactly(length)
+    """Receive a length-prefixed JSON message.
+
+    Raises:
+        ConnectionError: If the remote end closes before the full message
+            is received (wraps asyncio.IncompleteReadError).
+    """
+    try:
+        length_bytes = await reader.readexactly(4)
+        length = int.from_bytes(length_bytes, "big")
+        payload = await reader.readexactly(length)
+    except asyncio.IncompleteReadError as e:
+        raise ConnectionError(
+            f"Connection closed before full message received "
+            f"(got {len(e.partial)} of {e.expected or '?'} bytes)"
+        ) from e
     return json.loads(payload.decode())
 
 
@@ -326,6 +337,7 @@ async def run_master(
             )
             for _, w in worker_connections:
                 w.close()
+                await w.wait_closed()
             return
 
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
@@ -359,6 +371,7 @@ async def run_master(
                 logger.error("  Worker %s: error receiving results: %s", i, e)
             finally:
                 writer.close()
+                await writer.wait_closed()
 
     if not all_stats:
         logger.error("Master: no results received from workers.")
@@ -418,29 +431,31 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
     reader, writer = await asyncio.open_connection(master_host, master_port)
     logger.info("Worker: connected to master, waiting for config...")
 
-    msg = await _recv_msg(reader)
-    if msg.get("type") != "config":
-        logger.error("Worker: unexpected message type: %s", msg.get("type"))
+    try:
+        msg = await _recv_msg(reader)
+        if msg.get("type") != "config":
+            logger.error("Worker: unexpected message type: %s", msg.get("type"))
+            return
+
+        config = _deserialize_config(msg["config"])
+        logger.info("Worker: received config. Target: %s", config.url)
+        logger.info("Worker: starting benchmark...")
+
+        # Run the appropriate benchmark
+        if config.users is not None:
+            stats, _ = await run_user_simulation(config)
+        else:
+            stats, _ = await run_benchmark(config)
+
+        logger.info(
+            "Worker: benchmark complete. %s requests, %s errors",
+            f"{stats.total_requests:,}",
+            stats.errors,
+        )
+
+        # Send results back to master
+        await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})
+        logger.info("Worker: results sent to master. Done.")
+    finally:
         writer.close()
-        return
-
-    config = _deserialize_config(msg["config"])
-    logger.info("Worker: received config. Target: %s", config.url)
-    logger.info("Worker: starting benchmark...")
-
-    # Run the appropriate benchmark
-    if config.users is not None:
-        stats, _ = await run_user_simulation(config)
-    else:
-        stats, _ = await run_benchmark(config)
-
-    logger.info(
-        "Worker: benchmark complete. %s requests, %s errors",
-        f"{stats.total_requests:,}",
-        stats.errors,
-    )
-
-    # Send results back to master
-    await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})
-    writer.close()
-    logger.info("Worker: results sent to master. Done.")
+        await writer.wait_closed()

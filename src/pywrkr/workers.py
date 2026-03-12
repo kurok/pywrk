@@ -561,10 +561,14 @@ def _calc_effective_timeout(
     config: BenchmarkConfig,
     start_time: float,
 ) -> float:
-    """Calculate effective request timeout considering remaining duration."""
+    """Calculate effective request timeout considering remaining duration.
+
+    Returns at least 0.1s to avoid zero/negative timeouts when the
+    benchmark has overrun its duration window.
+    """
     if config.duration is not None:
         remaining = config.duration - (time.monotonic() - start_time)
-        return min(config.timeout_sec, remaining + 1)
+        return max(0.1, min(config.timeout_sec, remaining + 1))
     return config.timeout_sec
 
 
@@ -904,10 +908,12 @@ async def _finalize_run(
     quiet: bool = False,
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds."""
-    await asyncio.gather(*tasks, return_exceptions=True)
-    stop_event.set()
-    await progress_task
-    await connector.close()
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        stop_event.set()
+        await progress_task
+    finally:
+        await connector.close()
 
     end_time = time.monotonic()
     actual_duration = end_time - start_time
@@ -1360,6 +1366,8 @@ def _write_autofind_json(
             for s in steps
         ],
     }
+    if config.json_output is None:
+        return
     with open(config.json_output, "w") as f:
         json.dump(data, f, indent=2)
     logger.info("  JSON results written to %s", config.json_output)
