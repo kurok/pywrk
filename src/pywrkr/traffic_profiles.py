@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 """Traffic shaping profiles and rate limiter for pywrkr."""
+
+from __future__ import annotations
 
 import asyncio
 import csv
 import math
 import time
-
 
 # ---------------------------------------------------------------------------
 # Traffic profiles -- advanced traffic shaping
@@ -80,7 +79,7 @@ class StepProfile(TrafficProfile):
         return self.levels[idx]
 
     def describe(self) -> str:
-        return f"step (levels={','.join(f'{l:.0f}' for l in self.levels)})"
+        return f"step (levels={','.join(f'{lv:.0f}' for lv in self.levels)})"
 
 
 class SawtoothProfile(TrafficProfile):
@@ -144,8 +143,13 @@ class SpikeProfile(TrafficProfile):
 
     name = "spike"
 
-    def __init__(self, interval: float = 10.0, spike_dur: float = 2.0,
-                 multiplier: float = 5.0, baseline: float = 0.2):
+    def __init__(
+        self,
+        interval: float = 10.0,
+        spike_dur: float = 2.0,
+        multiplier: float = 5.0,
+        baseline: float = 0.2,
+    ):
         self.interval = interval
         self.spike_dur = spike_dur
         self.multiplier = multiplier
@@ -160,8 +164,10 @@ class SpikeProfile(TrafficProfile):
         return base_rate * self.baseline
 
     def describe(self) -> str:
-        return (f"spike (interval={self.interval}s, dur={self.spike_dur}s, "
-                f"x{self.multiplier}, baseline={self.baseline:.0%})")
+        return (
+            f"spike (interval={self.interval}s, dur={self.spike_dur}s, "
+            f"x{self.multiplier}, baseline={self.baseline:.0%})"
+        )
 
 
 class BusinessHoursProfile(TrafficProfile):
@@ -353,6 +359,7 @@ def parse_traffic_profile(spec: str) -> TrafficProfile:
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
+
 
 class RateLimiter:
     """Token-bucket-style rate limiter that distributes requests evenly over time.

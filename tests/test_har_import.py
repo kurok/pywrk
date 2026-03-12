@@ -55,9 +55,7 @@ def _make_entry(
 
 def _write_har(har_dict):
     """Write a HAR dict to a temp file and return its path."""
-    f = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".har", delete=False, encoding="utf-8"
-    )
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".har", delete=False, encoding="utf-8")
     json.dump(har_dict, f)
     f.close()
     return f.name
@@ -67,11 +65,18 @@ class TestParseHar(unittest.TestCase):
     """Tests for parse_har()."""
 
     def test_parse_basic_har(self):
-        har = _make_har([
-            _make_entry(url="https://example.com/a", method="GET", status=200, time_ms=50),
-            _make_entry(url="https://example.com/b", method="POST", status=201, time_ms=100,
-                        post_data={"mimeType": "application/json", "text": '{"key": "val"}'}),
-        ])
+        har = _make_har(
+            [
+                _make_entry(url="https://example.com/a", method="GET", status=200, time_ms=50),
+                _make_entry(
+                    url="https://example.com/b",
+                    method="POST",
+                    status=201,
+                    time_ms=100,
+                    post_data={"mimeType": "application/json", "text": '{"key": "val"}'},
+                ),
+            ]
+        )
         path = _write_har(har)
         try:
             entries = parse_har(path)
@@ -144,14 +149,16 @@ class TestParseHar(unittest.TestCase):
             os.unlink(path)
 
     def test_parse_extracts_headers(self):
-        har = _make_har([
-            _make_entry(
-                headers=[
-                    {"name": "Authorization", "value": "Bearer token123"},
-                    {"name": "Content-Type", "value": "application/json"},
-                ],
-            ),
-        ])
+        har = _make_har(
+            [
+                _make_entry(
+                    headers=[
+                        {"name": "Authorization", "value": "Bearer token123"},
+                        {"name": "Content-Type", "value": "application/json"},
+                    ],
+                ),
+            ]
+        )
         path = _write_har(har)
         try:
             entries = parse_har(path)
@@ -170,7 +177,9 @@ class TestFilterEntries(unittest.TestCase):
             HarEntry(url="https://api.example.com/orders", method="POST", status=201, time_ms=150),
             HarEntry(url="https://cdn.example.com/style.css", method="GET", status=200, time_ms=50),
             HarEntry(url="https://cdn.example.com/logo.png", method="GET", status=200, time_ms=30),
-            HarEntry(url="https://analytics.tracker.com/pixel", method="GET", status=200, time_ms=20),
+            HarEntry(
+                url="https://analytics.tracker.com/pixel", method="GET", status=200, time_ms=20
+            ),
         ]
 
     def test_default_filters_static(self):
@@ -193,6 +202,7 @@ class TestFilterEntries(unittest.TestCase):
         result = filter_entries(self._entries(), config)
         self.assertEqual(len(result), 2)
         from urllib.parse import urlparse
+
         self.assertTrue(all(urlparse(e.url).hostname == "api.example.com" for e in result))
 
     def test_exclude_pattern(self):
@@ -469,11 +479,13 @@ class TestConvertHar(unittest.TestCase):
     """Tests for the high-level convert_har() function."""
 
     def setUp(self):
-        self.har = _make_har([
-            _make_entry(url="https://api.example.com/users", method="GET", time_ms=100),
-            _make_entry(url="https://api.example.com/users/1", method="GET", time_ms=80),
-            _make_entry(url="https://cdn.example.com/style.css", method="GET", time_ms=50),
-        ])
+        self.har = _make_har(
+            [
+                _make_entry(url="https://api.example.com/users", method="GET", time_ms=100),
+                _make_entry(url="https://api.example.com/users/1", method="GET", time_ms=80),
+                _make_entry(url="https://cdn.example.com/style.css", method="GET", time_ms=50),
+            ]
+        )
         self.path = _write_har(self.har)
 
     def tearDown(self):
@@ -528,10 +540,12 @@ class TestHarImportCLI(unittest.TestCase):
 
     def test_cli_har_import_to_stdout(self):
         from pywrkr.main import _build_har_import_parser
+
         parser = _build_har_import_parser()
         har_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "examples", "sample-recording.har",
+            "examples",
+            "sample-recording.har",
         )
         args = parser.parse_args([har_path])
         self.assertEqual(args.har_file, har_path)
@@ -540,21 +554,31 @@ class TestHarImportCLI(unittest.TestCase):
 
     def test_cli_har_import_with_options(self):
         from pywrkr.main import _build_har_import_parser
+
         parser = _build_har_import_parser()
-        args = parser.parse_args([
-            "test.har",
-            "-o", "output.json",
-            "--format", "url-file",
-            "--include-static",
-            "--domain", "api.example.com",
-            "--domain", "web.example.com",
-            "--exclude", r"/analytics",
-            "--preserve-headers",
-            "--no-think-time",
-            "--think-time-multiplier", "0.5",
-            "--assert-status",
-            "--name", "My Test",
-        ])
+        args = parser.parse_args(
+            [
+                "test.har",
+                "-o",
+                "output.json",
+                "--format",
+                "url-file",
+                "--include-static",
+                "--domain",
+                "api.example.com",
+                "--domain",
+                "web.example.com",
+                "--exclude",
+                r"/analytics",
+                "--preserve-headers",
+                "--no-think-time",
+                "--think-time-multiplier",
+                "0.5",
+                "--assert-status",
+                "--name",
+                "My Test",
+            ]
+        )
         self.assertEqual(args.format, "url-file")
         self.assertEqual(args.output, "output.json")
         self.assertTrue(args.include_static)
@@ -573,7 +597,8 @@ class TestSampleHarFile(unittest.TestCase):
     def _sample_har_path(self):
         return os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "examples", "sample-recording.har",
+            "examples",
+            "sample-recording.har",
         )
 
     def test_parse_sample_har(self):
@@ -608,7 +633,7 @@ class TestSampleHarFile(unittest.TestCase):
         # GET requests don't have method prefix
         self.assertTrue(lines[0].startswith("https://"))
         # POST has method prefix
-        self.assertTrue(any(l.startswith("POST ") for l in lines))
+        self.assertTrue(any(line.startswith("POST ") for line in lines))
 
 
 if __name__ == "__main__":

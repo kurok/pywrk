@@ -10,38 +10,38 @@ from collections import defaultdict
 
 # Optional third-party imports
 try:
-    from rich.live import Live
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.text import Text
+    from rich.live import Live  # noqa: F401
+    from rich.panel import Panel  # noqa: F401
+    from rich.table import Table  # noqa: F401
+    from rich.text import Text  # noqa: F401
+
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
 
 try:
-    from opentelemetry import metrics as otel_metrics
+    from opentelemetry import metrics as otel_metrics  # noqa: F401
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.resources import Resource
+
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
 
 from pywrkr.config import (
     BenchmarkConfig,
-    LatencyBreakdown,
     StepResult,
     Threshold,
     WorkerStats,
-    AutofindConfig,
 )
 from pywrkr.traffic_profiles import RateLimiter
-
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
 
 def format_bytes(n: float) -> str:
     """Format byte count to human-readable string (B/KB/MB/GB/TB)."""
@@ -64,6 +64,7 @@ def format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 # Report printers
 # ---------------------------------------------------------------------------
+
 
 def print_latency_histogram(latencies: list[float], buckets: int = 20, file=sys.stdout) -> None:
     """Print an ASCII histogram of latency distribution."""
@@ -118,8 +119,7 @@ _THRESHOLD_PATTERN = re.compile(
     r"([0-9]*\.?[0-9]+)\s*(ms|s|us|%)?\s*$"
 )
 
-_LATENCY_METRICS = {"p50", "p75", "p90", "p95", "p99",
-                    "avg_latency", "max_latency", "min_latency"}
+_LATENCY_METRICS = {"p50", "p75", "p90", "p95", "p99", "avg_latency", "max_latency", "min_latency"}
 
 _PERCENTILE_MAP = {"p50": 50, "p75": 75, "p90": 90, "p95": 95, "p99": 99}
 
@@ -141,17 +141,14 @@ def parse_threshold(expr: str) -> "Threshold":
         elif unit == "s" or unit is None:
             pass  # already seconds
         elif unit == "%":
-            raise ValueError(
-                f"Invalid unit '%' for latency metric {metric!r} in: {expr!r}")
+            raise ValueError(f"Invalid unit '%' for latency metric {metric!r} in: {expr!r}")
     elif metric == "error_rate":
         # '%' is optional; value is always a percentage number
         if unit in ("ms", "s", "us"):
-            raise ValueError(
-                f"Invalid unit {unit!r} for error_rate in: {expr!r}")
+            raise ValueError(f"Invalid unit {unit!r} for error_rate in: {expr!r}")
     elif metric == "rps":
         if unit in ("ms", "s", "us", "%"):
-            raise ValueError(
-                f"Invalid unit {unit!r} for rps in: {expr!r}")
+            raise ValueError(f"Invalid unit {unit!r} for rps in: {expr!r}")
 
     return Threshold(metric=metric, operator=operator, value=value, raw_expr=expr.strip())
 
@@ -256,7 +253,9 @@ def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
         print(f"    p{p:<6} {format_duration(val):>12}", file=file)
 
 
-def print_rps_timeline(timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout) -> None:
+def print_rps_timeline(
+    timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout
+) -> None:
     """Print requests-per-second timeline."""
     if not timeline:
         return
@@ -278,7 +277,13 @@ def print_rps_timeline(timeline: list[tuple[float, int]], start: float, duration
         print(f"    {t_start:>4}s | {bar:<{bar_max}} | {rps:>8.1f} req/s", file=file)
 
 
-def build_results_dict(stats: WorkerStats, duration: float, connections: int, config: BenchmarkConfig | None = None, rate_limiter: RateLimiter | None = None) -> dict:
+def build_results_dict(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    config: BenchmarkConfig | None = None,
+    rate_limiter: RateLimiter | None = None,
+) -> dict:
     """Build a structured results dict for JSON/HTML/programmatic use."""
     from pywrkr.workers import aggregate_breakdowns
 
@@ -341,9 +346,7 @@ def build_results_dict(stats: WorkerStats, duration: float, connections: int, co
         }
         for phase in ("dns", "connect", "tls", "ttfb", "transfer", "total"):
             if phase in agg:
-                bd_json[phase] = {
-                    k: round(v, 6) for k, v in agg[phase].items()
-                }
+                bd_json[phase] = {k: round(v, 6) for k, v in agg[phase].items()}
         result["latency_breakdown"] = bd_json
     return result
 
@@ -382,9 +385,7 @@ def generate_html_report(stats: WorkerStats, duration: float, connections: int) 
         "<html><head><title>pywrkr benchmark results</title></head><body>\n"
         "<h1>pywrkr Benchmark Results</h1>\n"
         "<table border='1' cellpadding='4'>\n"
-        "<tr><th>Metric</th><th>Value</th></tr>\n"
-        + "\n".join(rows)
-        + "\n</table></body></html>"
+        "<tr><th>Metric</th><th>Value</th></tr>\n" + "\n".join(rows) + "\n</table></body></html>"
     )
 
 
@@ -570,27 +571,32 @@ def generate_gatling_html_report(
   </div>
   <div class="indicator">
     <div class="label">Requests/sec</div>
-    <div class="value green">{results.get('requests_per_sec', 0):,.1f}</div>
+    <div class="value green">{results.get("requests_per_sec", 0):,.1f}</div>
   </div>
   <div class="indicator">
     <div class="label">Errors</div>
-    <div class="value {'red' if stats.errors else 'green'}">{stats.errors:,} ({error_rate:.1f}%)</div>
+    <div class="value {"red" if stats.errors else "green"}">{stats.errors:,} ({
+        error_rate:.1f}%)</div>
   </div>
   <div class="indicator">
     <div class="label">Mean Latency</div>
-    <div class="value">{format_duration(latency.get('mean', 0))}</div>
+    <div class="value">{format_duration(latency.get("mean", 0))}</div>
   </div>
   <div class="indicator">
     <div class="label">p95 Latency</div>
-    <div class="value {'yellow' if percentiles.get('p95', 0) > 1 else ''}">{format_duration(percentiles.get('p95', 0))}</div>
+    <div class="value {"yellow" if percentiles.get("p95", 0) > 1 else ""}">{
+        format_duration(percentiles.get("p95", 0))
+    }</div>
   </div>
   <div class="indicator">
     <div class="label">p99 Latency</div>
-    <div class="value {'red' if percentiles.get('p99', 0) > 2 else ''}">{format_duration(percentiles.get('p99', 0))}</div>
+    <div class="value {"red" if percentiles.get("p99", 0) > 2 else ""}">{
+        format_duration(percentiles.get("p99", 0))
+    }</div>
   </div>
   <div class="indicator">
     <div class="label">Transfer</div>
-    <div class="value">{format_bytes(results.get('transfer_per_sec_bytes', 0))}/s</div>
+    <div class="value">{format_bytes(results.get("transfer_per_sec_bytes", 0))}/s</div>
   </div>
 </div>
 
@@ -617,26 +623,38 @@ def generate_gatling_html_report(
     <canvas id="scChart"></canvas>
   </div>
   <!-- Latency Breakdown -->
-  <div class="chart-card" id="bdCard" style="{'display:block' if has_breakdown else 'display:none'}">
+  <div class="chart-card" id="bdCard" style="{
+        "display:block" if has_breakdown else "display:none"
+    }">
     <h3>Latency Breakdown (avg)</h3>
     <canvas id="bdChart"></canvas>
   </div>
 </div>
 
 <!-- Error Details -->
-{"" if not error_types else '''
+{
+        ""
+        if not error_types
+        else '''
 <div class="chart-card full" style="margin-bottom:28px">
   <h3>Error Details</h3>
   <table class="errors-table">
     <tr><th>Error</th><th>Count</th></tr>
-    ''' + "".join(f'<tr><td>{_html_escape(e)}</td><td>{c:,}</td></tr>' for e, c in sorted(error_types.items(), key=lambda x: -x[1])) + '''
+    '''
+        + "".join(
+            f"<tr><td>{_html_escape(e)}</td><td>{c:,}</td></tr>"
+            for e, c in sorted(error_types.items(), key=lambda x: -x[1])
+        )
+        + '''
   </table>
 </div>
-'''}
+'''
+    }
 
 </div>
 <div class="footer">
-  Generated by <a href="https://github.com/kurok/pywrkr">pywrkr</a> &mdash; Python HTTP benchmarking tool
+  Generated by <a href="https://github.com/kurok/pywrkr">pywrkr</a>
+  &mdash; Python HTTP benchmarking tool
 </div>
 
 <script>
@@ -790,8 +808,9 @@ def write_html_report(path: str, html: str) -> None:
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP."""
     if not OTEL_AVAILABLE:
-        print("Warning: opentelemetry packages not installed. "
-              "Install with: pip install pywrkr[otel]")
+        print(
+            "Warning: opentelemetry packages not installed. Install with: pip install pywrkr[otel]"
+        )
         return
 
     try:
@@ -838,8 +857,8 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
 
 def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> None:
     """Export benchmark metrics to a Prometheus Pushgateway-compatible endpoint."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     try:
         # Build Prometheus text format
@@ -852,29 +871,40 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
             lines.append(f"# TYPE {name} {mtype}")
             lines.append(f"{name}{labels_str} {value}")
 
-        _add("pywrkr_requests_total", results.get("total_requests", 0),
-             "counter", "Total requests")
-        _add("pywrkr_errors_total", results.get("total_errors", 0),
-             "counter", "Total errors")
-        _add("pywrkr_requests_per_sec", results.get("requests_per_sec", 0),
-             "gauge", "Requests per second")
-        _add("pywrkr_transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0),
-             "gauge", "Transfer bytes per second")
-        _add("pywrkr_duration_sec", results.get("duration_sec", 0),
-             "gauge", "Benchmark duration in seconds")
+        _add("pywrkr_requests_total", results.get("total_requests", 0), "counter", "Total requests")
+        _add("pywrkr_errors_total", results.get("total_errors", 0), "counter", "Total errors")
+        _add(
+            "pywrkr_requests_per_sec",
+            results.get("requests_per_sec", 0),
+            "gauge",
+            "Requests per second",
+        )
+        _add(
+            "pywrkr_transfer_bytes_per_sec",
+            results.get("transfer_per_sec_bytes", 0),
+            "gauge",
+            "Transfer bytes per second",
+        )
+        _add(
+            "pywrkr_duration_sec",
+            results.get("duration_sec", 0),
+            "gauge",
+            "Benchmark duration in seconds",
+        )
 
         percentiles = results.get("percentiles", {})
         latency = results.get("latency", {})
-        _add("pywrkr_latency_p50_ms", percentiles.get("p50", 0) * 1000,
-             "gauge", "p50 latency in ms")
-        _add("pywrkr_latency_p95_ms", percentiles.get("p95", 0) * 1000,
-             "gauge", "p95 latency in ms")
-        _add("pywrkr_latency_p99_ms", percentiles.get("p99", 0) * 1000,
-             "gauge", "p99 latency in ms")
-        _add("pywrkr_latency_mean_ms", latency.get("mean", 0) * 1000,
-             "gauge", "Mean latency in ms")
-        _add("pywrkr_latency_max_ms", latency.get("max", 0) * 1000,
-             "gauge", "Max latency in ms")
+        _add(
+            "pywrkr_latency_p50_ms", percentiles.get("p50", 0) * 1000, "gauge", "p50 latency in ms"
+        )
+        _add(
+            "pywrkr_latency_p95_ms", percentiles.get("p95", 0) * 1000, "gauge", "p95 latency in ms"
+        )
+        _add(
+            "pywrkr_latency_p99_ms", percentiles.get("p99", 0) * 1000, "gauge", "p99 latency in ms"
+        )
+        _add("pywrkr_latency_mean_ms", latency.get("mean", 0) * 1000, "gauge", "Mean latency in ms")
+        _add("pywrkr_latency_max_ms", latency.get("max", 0) * 1000, "gauge", "Max latency in ms")
 
         body = "\n".join(lines) + "\n"
         url = endpoint.rstrip("/") + "/metrics/job/pywrkr"
@@ -889,7 +919,14 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
         print(f"Warning: failed to export metrics to Prometheus endpoint {endpoint}: {e}")
 
 
-def print_results(stats: WorkerStats, duration: float, connections: int, start_time: float, config: BenchmarkConfig, rate_limiter: RateLimiter | None = None) -> None:
+def print_results(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    start_time: float,
+    config: BenchmarkConfig,
+    rate_limiter: RateLimiter | None = None,
+) -> None:
     """Print full benchmark results to stdout."""
     from pywrkr.workers import aggregate_breakdowns
 
@@ -919,8 +956,11 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
     if config.users:
         print(f"  Virtual Users:     {config.users}", file=out)
         print(f"  Ramp-up:           {format_duration(config.ramp_up)}", file=out)
-        print(f"  Think Time:        {format_duration(config.think_time)} "
-              f"(+/-{config.think_time_jitter:.0%})", file=out)
+        print(
+            f"  Think Time:        {format_duration(config.think_time)} "
+            f"(+/-{config.think_time_jitter:.0%})",
+            file=out,
+        )
         if config.users > 0:
             print(f"  Avg Reqs/User:     {stats.total_requests / config.users:,.1f}", file=out)
     else:
@@ -952,7 +992,9 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
         print(f"    Mean:      {format_duration(statistics.mean(stats.latencies)):>12}", file=out)
         print(f"    Median:    {format_duration(statistics.median(stats.latencies)):>12}", file=out)
         if len(stats.latencies) > 1:
-            print(f"    Stdev:     {format_duration(statistics.stdev(stats.latencies)):>12}", file=out)
+            print(
+                f"    Stdev:     {format_duration(statistics.stdev(stats.latencies)):>12}", file=out
+            )
 
         print(file=out)
         print_percentiles(stats.latencies, file=out)
@@ -986,11 +1028,14 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
         ]:
             if phase in agg:
                 d = agg[phase]
-                print(f"    {label + ':':18s} {format_duration(d['avg']):>12}"
-                      f"  (min={format_duration(d['min'])},"
-                      f" max={format_duration(d['max'])},"
-                      f" p50={format_duration(d['p50'])},"
-                      f" p95={format_duration(d['p95'])})", file=out)
+                print(
+                    f"    {label + ':':18s} {format_duration(d['avg']):>12}"
+                    f"  (min={format_duration(d['min'])},"
+                    f" max={format_duration(d['max'])},"
+                    f" p50={format_duration(d['p50'])},"
+                    f" p95={format_duration(d['p95'])})",
+                    file=out,
+                )
         new_c = agg.get("new_connections", 0)
         reused_c = agg.get("reused_connections", 0)
         print(f"\n    New Connections:    {new_c:,}", file=out)
@@ -1023,10 +1068,13 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
             if lats:
                 mean_lat = statistics.mean(lats)
                 print(f"    {step_name}:", file=out)
-                print(f"      Count: {len(lats):,}  "
-                      f"Mean: {format_duration(mean_lat)}  "
-                      f"Min: {format_duration(min(lats))}  "
-                      f"Max: {format_duration(max(lats))}", file=out)
+                print(
+                    f"      Count: {len(lats):,}  "
+                    f"Mean: {format_duration(mean_lat)}  "
+                    f"Min: {format_duration(min(lats))}  "
+                    f"Max: {format_duration(max(lats))}",
+                    file=out,
+                )
 
     # RPS timeline
     if stats.rps_timeline:
@@ -1056,7 +1104,8 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
     # Interactive HTML report (Gatling-style)
     if config.html_report:
         html = generate_gatling_html_report(
-            stats, duration, connections, config, rate_limiter, start_time)
+            stats, duration, connections, config, rate_limiter, start_time
+        )
         write_html_report(config.html_report, html)
         print(f"\n  HTML report written to: {config.html_report}", file=out)
 
@@ -1072,6 +1121,7 @@ def print_results(stats: WorkerStats, duration: float, connections: int, start_t
 # ---------------------------------------------------------------------------
 # Autofind reporting
 # ---------------------------------------------------------------------------
+
 
 def _format_latency_short(secs: float) -> str:
     """Format latency for autofind summary table (compact)."""
@@ -1092,18 +1142,24 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None) -> No
         print("  Maximum sustainable load: could not be determined")
     print()
     print("  Step Results:")
-    print(f"  {'Users':>5} | {'RPS':>8} | {'p50':>7} | {'p95':>7} | {'p99':>7} | {'Errors':>6} | Status")
+    print(
+        f"  {'Users':>5} | {'RPS':>8} | {'p50':>7}"
+        f" | {'p95':>7} | {'p99':>7} | {'Errors':>6} | Status"
+    )
     for s in steps:
         status = "OK" if s.passed else "FAIL"
-        print(f"  {s.users:>5} | {s.rps:>8.1f} | {_format_latency_short(s.p50):>7} | "
-              f"{_format_latency_short(s.p95):>7} | {_format_latency_short(s.p99):>7} | "
-              f"{s.error_rate:>5.1f}% | {status}")
+        print(
+            f"  {s.users:>5} | {s.rps:>8.1f} | {_format_latency_short(s.p50):>7} | "
+            f"{_format_latency_short(s.p95):>7} | {_format_latency_short(s.p99):>7} | "
+            f"{s.error_rate:>5.1f}% | {status}"
+        )
     print("=" * 60)
 
 
 # ---------------------------------------------------------------------------
 # Multi-URL reporting
 # ---------------------------------------------------------------------------
+
 
 def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F821
     """Print a comparison table across all URLs."""
@@ -1113,11 +1169,13 @@ def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F
     print(f"{'=' * 90}", file=out)
 
     # Header
-    print(f"\n  {'#':>3}  {'Method':<7} {'URL':<40} {'Reqs':>7} {'RPS':>9} "
-          f"{'p50':>9} {'p95':>9} {'p99':>9} {'Errs':>6}", file=out)
+    print(
+        f"\n  {'#':>3}  {'Method':<7} {'URL':<40} {'Reqs':>7} {'RPS':>9} "
+        f"{'p50':>9} {'p95':>9} {'p99':>9} {'Errs':>6}",
+        file=out,
+    )
     d = "\u2500"
-    print(f"  {d * 3}  {d * 7} {d * 40} {d * 7} {d * 9} "
-          f"{d * 9} {d * 9} {d * 9} {d * 6}", file=out)
+    print(f"  {d * 3}  {d * 7} {d * 40} {d * 7} {d * 9} {d * 9} {d * 9} {d * 9} {d * 6}", file=out)
 
     for i, r in enumerate(results, 1):
         rps = r.stats.total_requests / r.duration if r.duration > 0 else 0
@@ -1132,12 +1190,17 @@ def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F
             p95 = sorted_lat[min(int(math.ceil(95 / 100 * n)) - 1, n - 1)]
             p99 = sorted_lat[min(int(math.ceil(99 / 100 * n)) - 1, n - 1)]
 
-        err_pct = (r.stats.errors / r.stats.total_requests * 100) if r.stats.total_requests > 0 else 0
+        err_pct = (
+            (r.stats.errors / r.stats.total_requests * 100) if r.stats.total_requests > 0 else 0
+        )
 
-        print(f"  {i:>3}  {r.method:<7} {url_display:<40} "
-              f"{r.stats.total_requests:>7,} {rps:>9,.1f} "
-              f"{format_duration(p50):>9} {format_duration(p95):>9} {format_duration(p99):>9} "
-              f"{err_pct:>5.1f}%", file=out)
+        print(
+            f"  {i:>3}  {r.method:<7} {url_display:<40} "
+            f"{r.stats.total_requests:>7,} {rps:>9,.1f} "
+            f"{format_duration(p50):>9} {format_duration(p95):>9} {format_duration(p99):>9} "
+            f"{err_pct:>5.1f}%",
+            file=out,
+        )
 
     print(f"\n{'=' * 90}", file=out)
 
@@ -1145,8 +1208,11 @@ def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F
     total_reqs = sum(r.stats.total_requests for r in results)
     total_errs = sum(r.stats.errors for r in results)
     total_bytes = sum(r.stats.total_bytes for r in results)
-    print(f"  Total: {len(results)} endpoints, {total_reqs:,} requests, "
-          f"{total_errs:,} errors, {format_bytes(total_bytes)} transferred", file=out)
+    print(
+        f"  Total: {len(results)} endpoints, {total_reqs:,} requests, "
+        f"{total_errs:,} errors, {format_bytes(total_bytes)} transferred",
+        file=out,
+    )
     print(f"{'=' * 90}\n", file=out)
 
 

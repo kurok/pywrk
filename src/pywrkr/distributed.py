@@ -14,9 +14,9 @@ from pywrkr.config import (
     DEFAULT_TIMEOUT,
     BenchmarkConfig,
     LatencyBreakdown,
-    SSLConfig,
     Scenario,
     ScenarioStep,
+    SSLConfig,
     Threshold,
     WorkerStats,
 )
@@ -43,29 +43,46 @@ def _deserialize_ssl_config(data: dict | None) -> SSLConfig:
 
 
 def _serialize_threshold(th: Threshold) -> dict:
-    return {"metric": th.metric, "operator": th.operator, "value": th.value, "raw_expr": th.raw_expr}
+    return {
+        "metric": th.metric,
+        "operator": th.operator,
+        "value": th.value,
+        "raw_expr": th.raw_expr,
+    }
 
 
 def _deserialize_threshold(data: dict) -> Threshold:
-    return Threshold(metric=data["metric"], operator=data["operator"],
-                     value=data["value"], raw_expr=data["raw_expr"])
+    return Threshold(
+        metric=data["metric"],
+        operator=data["operator"],
+        value=data["value"],
+        raw_expr=data["raw_expr"],
+    )
 
 
 def _serialize_scenario_step(step: ScenarioStep) -> dict:
     return {
-        "path": step.path, "method": step.method, "body": step.body,
-        "headers": dict(step.headers), "assert_status": step.assert_status,
+        "path": step.path,
+        "method": step.method,
+        "body": step.body,
+        "headers": dict(step.headers),
+        "assert_status": step.assert_status,
         "assert_body_contains": step.assert_body_contains,
-        "think_time": step.think_time, "name": step.name,
+        "think_time": step.think_time,
+        "name": step.name,
     }
 
 
 def _deserialize_scenario_step(data: dict) -> ScenarioStep:
     return ScenarioStep(
-        path=data["path"], method=data.get("method", "GET"), body=data.get("body"),
-        headers=data.get("headers", {}), assert_status=data.get("assert_status"),
+        path=data["path"],
+        method=data.get("method", "GET"),
+        body=data.get("body"),
+        headers=data.get("headers", {}),
+        assert_status=data.get("assert_status"),
         assert_body_contains=data.get("assert_body_contains"),
-        think_time=data.get("think_time"), name=data.get("name"),
+        think_time=data.get("think_time"),
+        name=data.get("name"),
     )
 
 
@@ -178,28 +195,40 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "total_bytes": stats.total_bytes,
         "errors": stats.errors,
         "content_length_errors": stats.content_length_errors,
-        "latencies": stats.latencies,
+        "latencies": list(stats.latencies),
+        "latencies_total_seen": getattr(stats.latencies, "total_seen", len(stats.latencies)),
         "error_types": dict(stats.error_types),
         "status_codes": {str(k): v for k, v in stats.status_codes.items()},
         "rps_timeline": stats.rps_timeline,
         # Previously missing:
         "step_latencies": {k: v for k, v in stats.step_latencies.items()},
         "breakdowns": [
-            {"dns": b.dns, "connect": b.connect, "tls": b.tls,
-             "ttfb": b.ttfb, "transfer": b.transfer, "is_reused": b.is_reused}
+            {
+                "dns": b.dns,
+                "connect": b.connect,
+                "tls": b.tls,
+                "ttfb": b.ttfb,
+                "transfer": b.transfer,
+                "is_reused": b.is_reused,
+            }
             for b in stats.breakdowns
         ],
+        "breakdowns_total_seen": getattr(stats.breakdowns, "total_seen", len(stats.breakdowns)),
     }
 
 
 def _deserialize_stats(data: dict) -> WorkerStats:
     """Deserialize a dict back into WorkerStats."""
+    from pywrkr.config import ReservoirSampler
+
     ws = WorkerStats()
     ws.total_requests = data.get("total_requests", 0)
     ws.total_bytes = data.get("total_bytes", 0)
     ws.errors = data.get("errors", 0)
     ws.content_length_errors = data.get("content_length_errors", 0)
-    ws.latencies = data.get("latencies", [])
+    lat_items = data.get("latencies", [])
+    lat_seen = data.get("latencies_total_seen", len(lat_items))
+    ws.latencies = ReservoirSampler.from_list(lat_items, total_seen=lat_seen)
     for k, v in data.get("error_types", {}).items():
         ws.error_types[k] = v
     for k, v in data.get("status_codes", {}).items():
@@ -208,12 +237,20 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     # Previously missing:
     for k, v in data.get("step_latencies", {}).items():
         ws.step_latencies[k] = v
+    bd_items = []
     for b in data.get("breakdowns", []):
-        ws.breakdowns.append(LatencyBreakdown(
-            dns=b.get("dns", 0.0), connect=b.get("connect", 0.0),
-            tls=b.get("tls", 0.0), ttfb=b.get("ttfb", 0.0),
-            transfer=b.get("transfer", 0.0), is_reused=b.get("is_reused", False),
-        ))
+        bd_items.append(
+            LatencyBreakdown(
+                dns=b.get("dns", 0.0),
+                connect=b.get("connect", 0.0),
+                tls=b.get("tls", 0.0),
+                ttfb=b.get("ttfb", 0.0),
+                transfer=b.get("transfer", 0.0),
+                is_reused=b.get("is_reused", False),
+            )
+        )
+    bd_seen = data.get("breakdowns_total_seen", len(bd_items))
+    ws.breakdowns = ReservoirSampler.from_list(bd_items, total_seen=bd_seen)
     return ws
 
 
@@ -252,9 +289,13 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     return merged
 
 
-async def run_master(config: BenchmarkConfig, host: str, port: int, expect_workers: int) -> tuple[WorkerStats, int] | None:
+async def run_master(
+    config: BenchmarkConfig, host: str, port: int, expect_workers: int
+) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results."""
-    logger.info("Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers)
+    logger.info(
+        "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
+    )
 
     worker_connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
     ready_event = asyncio.Event()
@@ -262,8 +303,13 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
-        logger.info("  Worker connected: %s:%s (%s/%s)",
-                    addr[0], addr[1], len(worker_connections), expect_workers)
+        logger.info(
+            "  Worker connected: %s:%s (%s/%s)",
+            addr[0],
+            addr[1],
+            len(worker_connections),
+            expect_workers,
+        )
         if len(worker_connections) >= expect_workers:
             ready_event.set()
 
@@ -273,8 +319,11 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=300)
         except asyncio.TimeoutError:
-            logger.error("Master: timed out waiting for workers (%s/%s connected)",
-                        len(worker_connections), expect_workers)
+            logger.error(
+                "Master: timed out waiting for workers (%s/%s connected)",
+                len(worker_connections),
+                expect_workers,
+            )
             for _, w in worker_connections:
                 w.close()
             return
@@ -290,13 +339,20 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         all_stats: list[WorkerStats] = []
         for i, (reader, writer) in enumerate(worker_connections):
             try:
-                msg = await asyncio.wait_for(_recv_msg(reader), timeout=config.duration * 3 + 120 if config.duration else 600)
+                msg = await asyncio.wait_for(
+                    _recv_msg(reader), timeout=config.duration * 3 + 120 if config.duration else 600
+                )
                 if msg.get("type") == "result":
                     ws = _deserialize_stats(msg["stats"])
                     all_stats.append(ws)
                     addr = writer.get_extra_info("peername")
-                    logger.info("  Worker %s:%s finished: %s requests, %s errors",
-                               addr[0], addr[1], f"{ws.total_requests:,}", ws.errors)
+                    logger.info(
+                        "  Worker %s:%s finished: %s requests, %s errors",
+                        addr[0],
+                        addr[1],
+                        f"{ws.total_requests:,}",
+                        ws.errors,
+                    )
                 else:
                     logger.error("  Worker %s: unexpected message type: %s", i, msg.get("type"))
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:
@@ -310,11 +366,6 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
 
     # Merge and report
     merged = merge_worker_stats(all_stats)
-    total_duration = max(
-        sum(ws.total_requests for ws in all_stats) / (merged.total_requests / max(merged.latencies) if merged.latencies else 1),
-        config.duration or 10.0,
-    ) if merged.latencies else (config.duration or 10.0)
-
     # Use actual duration from config for reporting
     actual_duration = config.duration or 10.0
 
@@ -341,8 +392,13 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         rate=config.rate,
         rate_ramp=config.rate_ramp,
     )
-    print_results(merged, actual_duration, report_config.connections,
-                  time.monotonic() - actual_duration, report_config)
+    print_results(
+        merged,
+        actual_duration,
+        report_config.connections,
+        time.monotonic() - actual_duration,
+        report_config,
+    )
 
     # Evaluate SLO thresholds
     exit_code = 0
@@ -378,8 +434,11 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
     else:
         stats, _ = await run_benchmark(config)
 
-    logger.info("Worker: benchmark complete. %s requests, %s errors",
-                f"{stats.total_requests:,}", stats.errors)
+    logger.info(
+        "Worker: benchmark complete. %s requests, %s errors",
+        f"{stats.total_requests:,}",
+        stats.errors,
+    )
 
     # Send results back to master
     await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})

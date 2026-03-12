@@ -76,9 +76,31 @@ def generate_html(data: dict) -> str:
     # Tags section
     tags_html = ""
     if tags:
-        tags_html = "<div class='tags'>" + " ".join(
-            f"<span class='tag'>{k}={v}</span>" for k, v in tags.items()
-        ) + "</div>"
+        tags_html = (
+            "<div class='tags'>"
+            + " ".join(f"<span class='tag'>{k}={v}</span>" for k, v in tags.items())
+            + "</div>"
+        )
+
+    pct_rows = "".join(
+        f"<tr><td>{k}</td><td>{fmt_ms(v)}</td></tr>"
+        for k, v in sorted(
+            percentiles.items(),
+            key=lambda x: float(x[0].replace("p", "")),
+        )
+    )
+    error_section = (
+        "<h2 class='section-title'>Errors</h2>"
+        "<table><thead><tr><th>Error Type</th>"
+        "<th>Count</th><th>% of Total</th></tr></thead>"
+        "<tbody>" + error_rows + "</tbody></table>"
+        if error_rows
+        else ""
+    )
+
+    err_cls = "kpi-good" if error_rate < 1 else "kpi-warn" if error_rate < 5 else "kpi-bad"
+    p95_val = percentiles.get("p95", 0)
+    p95_cls = "kpi-good" if p95_val < 0.5 else "kpi-warn" if p95_val < 1 else "kpi-bad"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -143,28 +165,28 @@ def generate_html(data: dict) -> str:
       <div class="kpi-value">{total_req:,}</div>
       <div class="kpi-label">Total Requests</div>
     </div>
-    <div class="kpi {'kpi-good' if rps > 0 else ''}">
+    <div class="kpi {"kpi-good" if rps > 0 else ""}">
       <div class="kpi-value">{rps:,.1f}</div>
       <div class="kpi-label">Requests/sec</div>
     </div>
-    <div class="kpi {'kpi-good' if error_rate < 1 else 'kpi-warn' if error_rate < 5 else 'kpi-bad'}">
+    <div class="kpi {err_cls}">
       <div class="kpi-value">{error_rate:.2f}%</div>
       <div class="kpi-label">Error Rate</div>
     </div>
     <div class="kpi">
-      <div class="kpi-value">{fmt_ms(latency.get('mean', 0))}</div>
+      <div class="kpi-value">{fmt_ms(latency.get("mean", 0))}</div>
       <div class="kpi-label">Mean Latency</div>
     </div>
     <div class="kpi">
-      <div class="kpi-value">{fmt_ms(latency.get('median', 0))}</div>
+      <div class="kpi-value">{fmt_ms(latency.get("median", 0))}</div>
       <div class="kpi-label">p50 Latency</div>
     </div>
-    <div class="kpi {'kpi-good' if percentiles.get('p95', 0) < 0.5 else 'kpi-warn' if percentiles.get('p95', 0) < 1 else 'kpi-bad'}">
-      <div class="kpi-value">{fmt_ms(percentiles.get('p95', 0))}</div>
+    <div class="kpi {p95_cls}">
+      <div class="kpi-value">{fmt_ms(percentiles.get("p95", 0))}</div>
       <div class="kpi-label">p95 Latency</div>
     </div>
     <div class="kpi">
-      <div class="kpi-value">{fmt_ms(percentiles.get('p99', 0))}</div>
+      <div class="kpi-value">{fmt_ms(percentiles.get("p99", 0))}</div>
       <div class="kpi-label">p99 Latency</div>
     </div>
     <div class="kpi">
@@ -190,16 +212,16 @@ def generate_html(data: dict) -> str:
       <tr><th>Metric</th><th>Value</th></tr>
     </thead>
     <tbody>
-      <tr><td>Min</td><td>{fmt_ms(latency.get('min', 0))}</td></tr>
-      <tr><td>Max</td><td>{fmt_ms(latency.get('max', 0))}</td></tr>
-      <tr><td>Mean</td><td>{fmt_ms(latency.get('mean', 0))}</td></tr>
-      <tr><td>Median</td><td>{fmt_ms(latency.get('median', 0))}</td></tr>
-      <tr><td>Stdev</td><td>{fmt_ms(latency.get('stdev', 0))}</td></tr>
-      {"".join(f'<tr><td>{k}</td><td>{fmt_ms(v)}</td></tr>' for k, v in sorted(percentiles.items(), key=lambda x: float(x[0].replace("p", ""))))}
+      <tr><td>Min</td><td>{fmt_ms(latency.get("min", 0))}</td></tr>
+      <tr><td>Max</td><td>{fmt_ms(latency.get("max", 0))}</td></tr>
+      <tr><td>Mean</td><td>{fmt_ms(latency.get("mean", 0))}</td></tr>
+      <tr><td>Median</td><td>{fmt_ms(latency.get("median", 0))}</td></tr>
+      <tr><td>Stdev</td><td>{fmt_ms(latency.get("stdev", 0))}</td></tr>
+      {pct_rows}
     </tbody>
   </table>
 
-  {"<h2 class='section-title'>Errors</h2>" + "<table><thead><tr><th>Error Type</th><th>Count</th><th>% of Total</th></tr></thead><tbody>" + error_rows + "</tbody></table>" if error_rows else ""}
+  {error_section}
 
   <h2 class="section-title">Transfer</h2>
   <table>
@@ -247,7 +269,7 @@ new Chart(document.getElementById('scChart'), {{
     labels: {json.dumps(sc_labels)},
     datasets: [{{
       data: {json.dumps(sc_values)},
-      backgroundColor: [{', '.join(sc_colors)}],
+      backgroundColor: [{", ".join(sc_colors)}],
       borderWidth: 0,
     }}]
   }},

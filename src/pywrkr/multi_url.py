@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class UrlEntry:
     """A single entry from a URL file."""
+
     url: str
     method: str = "GET"
 
@@ -42,7 +43,13 @@ def load_url_file(path: str) -> list[UrlEntry]:
                 continue
             parts = line.split(None, 1)
             if len(parts) == 2 and parts[0].upper() in (
-                "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
+                "GET",
+                "POST",
+                "PUT",
+                "DELETE",
+                "PATCH",
+                "HEAD",
+                "OPTIONS",
             ):
                 entries.append(UrlEntry(url=parts[1], method=parts[0].upper()))
             elif len(parts) >= 1:
@@ -58,6 +65,7 @@ def load_url_file(path: str) -> list[UrlEntry]:
 @dataclass
 class MultiUrlResult:
     """Result for a single URL in multi-URL mode."""
+
     url: str
     method: str
     stats: WorkerStats
@@ -94,13 +102,15 @@ async def run_multi_url(
             stats, exit_code = await run_benchmark(config)
         duration = time.monotonic() - start
 
-        results.append(MultiUrlResult(
-            url=entry.url,
-            method=entry.method,
-            stats=stats,
-            duration=duration,
-            exit_code=exit_code,
-        ))
+        results.append(
+            MultiUrlResult(
+                url=entry.url,
+                method=entry.method,
+                stats=stats,
+                duration=duration,
+                exit_code=exit_code,
+            )
+        )
 
     # Print comparison summary
     print_multi_url_summary(results)
