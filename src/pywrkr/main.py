@@ -574,9 +574,7 @@ def _parse_and_validate_args(
                 f"--start-users ({args.start_users})"
             )
         if args.step_multiplier <= 1.0:
-            parser.error(
-                f"--step-multiplier ({args.step_multiplier}) must be greater than 1.0"
-            )
+            parser.error(f"--step-multiplier ({args.step_multiplier}) must be greater than 1.0")
     elif args.users is not None:
         # User simulation requires duration, not request count
         if args.num_requests is not None:
