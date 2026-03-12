@@ -914,20 +914,20 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     tasks = []
     start_time = time.monotonic()
     ssl_ctx = _create_ssl_context(config)
-    connectors: list[aiohttp.TCPConnector] = []
+
+    # Share a single TCPConnector across all worker groups for efficient
+    # connection reuse.  The total pool limit equals the requested concurrency.
+    connector = aiohttp.TCPConnector(
+        limit=config.connections,
+        ssl=ssl_ctx,
+        force_close=not config.keepalive,
+        enable_cleanup_closed=True,
+    )
 
     for i in range(config.threads):
         n_conns = conns_per_group + (1 if i < remainder else 0)
         if n_conns == 0:
             continue
-
-        connector = aiohttp.TCPConnector(
-            limit=n_conns,
-            ssl=ssl_ctx,
-            force_close=not config.keepalive,
-            enable_cleanup_closed=True,
-        )
-        connectors.append(connector)
 
         for j in range(n_conns):
             ws = WorkerStats()
@@ -970,9 +970,8 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     stop_event.set()
     await progress_task
 
-    # Clean up connectors
-    for conn in connectors:
-        await conn.close()
+    # Clean up the shared connector
+    await connector.close()
 
     end_time = time.monotonic()
     actual_duration = end_time - start_time
@@ -1013,9 +1012,10 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         or 2 if any SLO threshold was breached.
 
     Concurrency notes:
-        All users share a single TCPConnector with limit=num_users. Ramp-up
-        is implemented by sleeping between task creation calls, so early
-        users begin sending requests while later users are still being launched.
+        All users share a single TCPConnector with
+        limit=min(num_users, config.connections). Ramp-up is implemented by
+        sleeping between task creation calls, so early users begin sending
+        requests while later users are still being launched.
     """
     num_users = config.users
     duration = config.duration or 60.0
@@ -1065,8 +1065,12 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
 
     ssl_ctx = _create_ssl_context(config)
 
+    # Users make sequential requests with think time, so they don't all need
+    # a connection simultaneously.  Cap the pool at the configured connections
+    # value (defaults to 10) or num_users, whichever is smaller.
+    pool_limit = min(num_users, config.connections)
     connector = aiohttp.TCPConnector(
-        limit=num_users,
+        limit=pool_limit,
         ssl=ssl_ctx,
         force_close=not config.keepalive,
         enable_cleanup_closed=True,
