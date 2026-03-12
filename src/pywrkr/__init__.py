@@ -101,113 +101,107 @@ __all__ = [
 ]
 
 from pywrkr.config import (
-    RequestResult,
-    LatencyBreakdown,
-    WorkerStats,
-    BenchmarkConfig,
-    Threshold,
     AutofindConfig,
-    StepResult,
-    ScenarioStep,
+    BenchmarkConfig,
+    LatencyBreakdown,
+    RequestResult,
     Scenario,
+    ScenarioStep,
     SSLConfig,
+    StepResult,
+    Threshold,
+    WorkerStats,
     load_scenario,
 )
-
-from pywrkr.traffic_profiles import (
-    TrafficProfile,
-    SineProfile,
-    StepProfile,
-    SawtoothProfile,
-    SquareProfile,
-    SpikeProfile,
-    BusinessHoursProfile,
-    CsvProfile,
-    parse_traffic_profile,
-    RateLimiter,
-)
-
-from pywrkr.reporting import (
-    RICH_AVAILABLE,
-    OTEL_AVAILABLE,
-    format_bytes,
-    format_duration,
-    print_latency_histogram,
-    compute_percentiles,
-    parse_threshold,
-    evaluate_thresholds,
-    _get_metric_value,
-    _compare,
-    print_threshold_results,
-    print_percentiles,
-    print_rps_timeline,
-    build_results_dict,
-    write_csv_output,
-    write_json_output,
-    generate_html_report,
-    generate_gatling_html_report,
-    _html_escape,
-    write_html_report,
-    export_to_otel,
-    export_to_prometheus,
-    print_results,
-    _format_latency_short,
-    print_autofind_summary,
-    print_multi_url_summary,
-    build_multi_url_json,
-)
-
-from pywrkr.workers import (
-    LiveDashboard,
-    make_url,
-    _build_request_headers,
-    _merge_all_stats,
-    _create_ssl_context,
-    create_trace_config,
-    aggregate_breakdowns,
-    worker,
-    user_worker,
-    scenario_worker,
-    show_progress,
-    run_benchmark,
-    run_user_simulation,
-    _step_passed,
-    _extract_step_result,
-    run_autofind,
-    _write_autofind_json,
-)
-
 from pywrkr.distributed import (
-    _serialize_config,
     _deserialize_config,
-    _serialize_stats,
     _deserialize_stats,
-    _send_msg,
     _recv_msg,
+    _send_msg,
+    _serialize_config,
+    _serialize_stats,
     merge_worker_stats,
     run_master,
     run_worker_node,
 )
-
-from pywrkr.multi_url import (
-    UrlEntry,
-    MultiUrlResult,
-    load_url_file,
-    run_multi_url,
-)
-
 from pywrkr.har_import import (
     HarEntry,
     HarImportConfig,
-    parse_har,
+    convert_har,
     filter_entries,
     har_to_scenario,
     har_to_url_file,
-    convert_har,
+    parse_har,
 )
 
-from pywrkr.main import parse_header
 # Re-export main function under a different name to avoid shadowing pywrkr.main module
 from pywrkr.main import main as cli_main
+from pywrkr.main import parse_header
+from pywrkr.multi_url import (
+    MultiUrlResult,
+    UrlEntry,
+    load_url_file,
+    run_multi_url,
+)
+from pywrkr.reporting import (
+    OTEL_AVAILABLE,
+    RICH_AVAILABLE,
+    _compare,
+    _format_latency_short,
+    _get_metric_value,
+    _html_escape,
+    build_multi_url_json,
+    build_results_dict,
+    compute_percentiles,
+    evaluate_thresholds,
+    export_to_otel,
+    export_to_prometheus,
+    format_bytes,
+    format_duration,
+    generate_gatling_html_report,
+    generate_html_report,
+    parse_threshold,
+    print_autofind_summary,
+    print_latency_histogram,
+    print_multi_url_summary,
+    print_percentiles,
+    print_results,
+    print_rps_timeline,
+    print_threshold_results,
+    write_csv_output,
+    write_html_report,
+    write_json_output,
+)
+from pywrkr.traffic_profiles import (
+    BusinessHoursProfile,
+    CsvProfile,
+    RateLimiter,
+    SawtoothProfile,
+    SineProfile,
+    SpikeProfile,
+    SquareProfile,
+    StepProfile,
+    TrafficProfile,
+    parse_traffic_profile,
+)
+from pywrkr.workers import (
+    LiveDashboard,
+    _build_request_headers,
+    _create_ssl_context,
+    _extract_step_result,
+    _merge_all_stats,
+    _step_passed,
+    _write_autofind_json,
+    aggregate_breakdowns,
+    create_trace_config,
+    make_url,
+    run_autofind,
+    run_benchmark,
+    run_user_simulation,
+    scenario_worker,
+    show_progress,
+    user_worker,
+    worker,
+)
 
 __version__ = "1.1.1"

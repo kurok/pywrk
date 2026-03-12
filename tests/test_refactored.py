@@ -11,9 +11,8 @@ import ssl
 import tempfile
 import time
 import unittest
-from collections import defaultdict
 from io import StringIO
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import aiohttp
 from aiohttp import web
@@ -25,7 +24,6 @@ from pywrkr.config import (
     SSLConfig,
     WorkerStats,
 )
-
 
 # ---------------------------------------------------------------------------
 # SSLConfig tests
@@ -262,10 +260,7 @@ class TestTimeoutBehavior(AioHTTPTestCase):
         self.assertEqual(stats.total_requests, 3)
         self.assertEqual(stats.errors, 3)
         # Check that timeout errors are categorized
-        has_timeout = any(
-            "Timeout" in k or "timeout" in k.lower()
-            for k in stats.error_types
-        )
+        has_timeout = any("Timeout" in k or "timeout" in k.lower() for k in stats.error_types)
         self.assertTrue(has_timeout, f"Expected timeout errors, got: {dict(stats.error_types)}")
 
     async def test_fast_requests_no_timeout(self):
@@ -319,9 +314,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
         ws = WorkerStats()
 
         # Start worker and stop it after a brief delay
-        task = asyncio.create_task(
-            pywrkr.worker(config, ws, connector, stop_event)
-        )
+        task = asyncio.create_task(pywrkr.worker(config, ws, connector, stop_event))
 
         await asyncio.sleep(0.5)
         stop_event.set()
@@ -347,8 +340,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
         ws = WorkerStats()
 
         task = asyncio.create_task(
-            pywrkr.user_worker(0, config, ws, connector, stop_event,
-                               time.monotonic(), active_users)
+            pywrkr.user_worker(0, config, ws, connector, stop_event, time.monotonic(), active_users)
         )
 
         await asyncio.sleep(0.5)
@@ -490,9 +482,7 @@ class TestLatencyBreakdown(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_aggregate_single(self):
-        bd = pywrkr.LatencyBreakdown(
-            dns=0.01, connect=0.02, tls=0.03, ttfb=0.05, transfer=0.01
-        )
+        bd = pywrkr.LatencyBreakdown(dns=0.01, connect=0.02, tls=0.03, ttfb=0.05, transfer=0.01)
         result = pywrkr.aggregate_breakdowns([bd])
         self.assertIn("dns", result)
         self.assertAlmostEqual(result["dns"]["avg"], 0.01)
@@ -599,12 +589,14 @@ class TestCLIValidation(unittest.TestCase):
 
     def test_ssl_verify_flag(self):
         from pywrkr.main import _build_parser
+
         parser = _build_parser()
         args = parser.parse_args(["--ssl-verify", "http://example.com"])
         self.assertTrue(args.ssl_verify)
 
     def test_ca_bundle_flag(self):
         from pywrkr.main import _build_parser
+
         parser = _build_parser()
         args = parser.parse_args(["--ca-bundle", "/path/to/ca.pem", "http://example.com"])
         self.assertEqual(args.ca_bundle, "/path/to/ca.pem")

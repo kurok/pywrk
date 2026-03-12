@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import math
 import random
 import signal
@@ -11,11 +12,11 @@ import statistics
 import sys
 import time
 import uuid
-import logging
 from urllib.parse import urlparse
 
 import aiohttp
 
+from pywrkr import reporting as _reporting
 from pywrkr.config import (
     AutofindConfig,
     BenchmarkConfig,
@@ -23,9 +24,8 @@ from pywrkr.config import (
     StepResult,
     WorkerStats,
 )
-from pywrkr.traffic_profiles import RateLimiter
-from pywrkr import reporting as _reporting
 from pywrkr.reporting import (
+    _format_latency_short,
     compute_percentiles,
     evaluate_thresholds,
     format_bytes,
@@ -33,9 +33,8 @@ from pywrkr.reporting import (
     print_autofind_summary,
     print_results,
     print_threshold_results,
-    write_json_output,
-    _format_latency_short,
 )
+from pywrkr.traffic_profiles import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Live TUI Dashboard
 # ---------------------------------------------------------------------------
+
 
 class LiveDashboard:
     """Real-time terminal dashboard using rich library."""
@@ -62,8 +62,8 @@ class LiveDashboard:
 
     def _build_display(self) -> "Panel":  # noqa: F821
         """Build the rich Panel for the current dashboard state."""
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         elapsed = time.monotonic() - self.start_time
         total_req = sum(ws.total_requests for ws in self.all_stats)
@@ -97,8 +97,7 @@ class LiveDashboard:
             filled = "\u2588" * bar_filled
             empty = "\u2591" * bar_empty
             progress_str = (
-                f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  "
-                f"[{filled}{empty}] {pct:.1f}%"
+                f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  [{filled}{empty}] {pct:.1f}%"
             )
         elif self.config.num_requests:
             total_n = self.config.num_requests
@@ -107,10 +106,7 @@ class LiveDashboard:
             bar_empty = 20 - bar_filled
             filled = "\u2588" * bar_filled
             empty = "\u2591" * bar_empty
-            progress_str = (
-                f"Progress: {total_req}/{total_n}  "
-                f"[{filled}{empty}] {pct:.1f}%"
-            )
+            progress_str = f"Progress: {total_req}/{total_n}  [{filled}{empty}] {pct:.1f}%"
         else:
             progress_str = f"Elapsed: {elapsed:.1f}s"
 
@@ -153,7 +149,7 @@ class LiveDashboard:
         max_bar = 24
         if rps > 0:
             bar_len = min(max_bar, max(1, int(rps / max(rps, 1) * max_bar)))
-            bar = '\u2588' * bar_len + '\u2591' * (max_bar - bar_len)
+            bar = "\u2588" * bar_len + "\u2591" * (max_bar - bar_len)
             table.add_row("Throughput:", f"{bar} {rps:.0f} req/s")
 
         return Panel(table, title="pywrkr Live Dashboard", border_style="green")
@@ -175,6 +171,7 @@ class LiveDashboard:
 # ---------------------------------------------------------------------------
 # URL helpers
 # ---------------------------------------------------------------------------
+
 
 def make_url(url: str, random_param: bool) -> str:
     """Return the URL, optionally appending a unique cache-busting query parameter."""
@@ -231,6 +228,7 @@ def _create_ssl_context(config: BenchmarkConfig) -> "ssl.SSLContext | None":
     certificate verification controlled by config.ssl_config.
     """
     from urllib.parse import urlparse
+
     parsed = urlparse(config.url)
     if parsed.scheme != "https":
         return None
@@ -247,6 +245,7 @@ def _create_ssl_context(config: BenchmarkConfig) -> "ssl.SSLContext | None":
 # ---------------------------------------------------------------------------
 # Latency breakdown tracing
 # ---------------------------------------------------------------------------
+
 
 def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
     """Create an aiohttp TraceConfig that captures per-request latency breakdown.
@@ -297,7 +296,7 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
     async def on_request_end(session, trace_ctx, params):
         ctx = trace_ctx.trace_request_ctx
         end = time.monotonic()
-        start = ctx.get("request_start", end)
+        ctx.get("request_start", end)
 
         # DNS time
         dns = 0.0
@@ -405,6 +404,7 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
 # Workers
 # ---------------------------------------------------------------------------
 
+
 async def worker(
     config: BenchmarkConfig,
     stats: WorkerStats,
@@ -511,8 +511,10 @@ async def worker(
                         stats.error_types[f"HTTP {resp.status}"] += 1
 
                     if config.verbosity >= 4:
-                        logger.debug(f"[v4] {config.method} {request_url} -> {resp.status} "
-                                     f"({len(data)}B, {format_duration(latency)})")
+                        logger.debug(
+                            f"[v4] {config.method} {request_url} -> {resp.status} "
+                            f"({len(data)}B, {format_duration(latency)})"
+                        )
                     elif config.verbosity >= 3:
                         logger.debug(f"[v3] {resp.status}")
 
@@ -725,7 +727,11 @@ async def scenario_worker(
                             return
                         request_counter["remaining"] -= 1
 
-                    remaining = (config.duration - (time.monotonic() - start_time)) if config.duration else config.timeout_sec
+                    remaining = (
+                        (config.duration - (time.monotonic() - start_time))
+                        if config.duration
+                        else config.timeout_sec
+                    )
                     effective_timeout = min(config.timeout_sec, remaining + 1)
                     client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
 
@@ -767,7 +773,10 @@ async def scenario_worker(
                             assertion_failed = False
                             if step.assert_status is not None and resp.status != step.assert_status:
                                 stats.errors += 1
-                                err_msg = f"AssertStatus: expected {step.assert_status}, got {resp.status}"
+                                err_msg = (
+                                    f"AssertStatus: expected {step.assert_status},"
+                                    f" got {resp.status}"
+                                )
                                 stats.error_types[err_msg] += 1
                                 assertion_failed = True
 
@@ -793,8 +802,13 @@ async def scenario_worker(
                         stats.error_types[error_name] += 1
                         stats.latencies.append(latency)
                         stats.step_latencies[step_name].append(latency)
-                        logger.warning("Scenario user %d step '%s' error: %s: %s",
-                                       user_id, step_name, error_name, e)
+                        logger.warning(
+                            "Scenario user %d step '%s' error: %s: %s",
+                            user_id,
+                            step_name,
+                            error_name,
+                            e,
+                        )
 
                     now = time.monotonic()
                     stats.rps_timeline.append((now, 1))
@@ -857,6 +871,7 @@ async def show_progress(
 # Main benchmark runner
 # ---------------------------------------------------------------------------
 
+
 async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     """Run a fixed-concurrency benchmark and return merged stats with exit code.
 
@@ -883,14 +898,18 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         that all workers check between requests.
     """
     mode_str = (
-        f"{config.num_requests} requests"
-        if config.num_requests
-        else f"{config.duration}s duration"
+        f"{config.num_requests} requests" if config.num_requests else f"{config.duration}s duration"
     )
     logger.info("Running benchmark: %s", config.url)
-    logger.info("  %d worker groups, %d connections, %s", config.threads, config.connections, mode_str)
-    logger.info("  Method: %s, Timeout: %ss, Keep-Alive: %s",
-                config.method, config.timeout_sec, "yes" if config.keepalive else "no")
+    logger.info(
+        "  %d worker groups, %d connections, %s", config.threads, config.connections, mode_str
+    )
+    logger.info(
+        "  Method: %s, Timeout: %ss, Keep-Alive: %s",
+        config.method,
+        config.timeout_sec,
+        "yes" if config.keepalive else "no",
+    )
     if config.rate is not None:
         rate_str = f"{config.rate:,.0f} req/s"
         if config.rate_ramp is not None:
@@ -957,8 +976,16 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                 _active = {"count": 0}
                 tasks.append(
                     asyncio.create_task(
-                        scenario_worker(j, config, ws, connector, stop_event,
-                                        start_time, _active, request_counter)
+                        scenario_worker(
+                            j,
+                            config,
+                            ws,
+                            connector,
+                            stop_event,
+                            start_time,
+                            _active,
+                            request_counter,
+                        )
                     )
                 )
             else:
@@ -1009,6 +1036,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
 # User simulation runner
 # ---------------------------------------------------------------------------
 
+
 async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     """Run a virtual-user load test with ramp-up and think time.
 
@@ -1031,16 +1059,23 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     """
     num_users = config.users
     duration = config.duration or 60.0
-    quiet = getattr(config, '_quiet', False)
+    quiet = getattr(config, "_quiet", False)
 
     if not quiet:
         logger.info("Running user simulation: %s", config.url)
         logger.info("  %d virtual users, %s duration", num_users, format_duration(duration))
-        logger.info("  Ramp-up: %s, Think time: %s (jitter: %s)",
-                     format_duration(config.ramp_up), format_duration(config.think_time),
-                     f"{config.think_time_jitter:.0%}")
-        logger.info("  Method: %s, Timeout: %ss, Keep-Alive: %s",
-                     config.method, config.timeout_sec, "yes" if config.keepalive else "no")
+        logger.info(
+            "  Ramp-up: %s, Think time: %s (jitter: %s)",
+            format_duration(config.ramp_up),
+            format_duration(config.think_time),
+            f"{config.think_time_jitter:.0%}",
+        )
+        logger.info(
+            "  Method: %s, Timeout: %ss, Keep-Alive: %s",
+            config.method,
+            config.timeout_sec,
+            "yes" if config.keepalive else "no",
+        )
         if config.rate is not None:
             rate_str = f"{config.rate:,.0f} req/s"
             if config.rate_ramp is not None:
@@ -1089,6 +1124,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         # In quiet mode, create a minimal stop-waiter instead of progress display
         async def _wait_stop(stop):
             await stop.wait()
+
         progress_task = asyncio.create_task(_wait_stop(stop_event))
     elif config.live_dashboard and _reporting.RICH_AVAILABLE:
         dashboard = LiveDashboard(all_stats, config, start_time, active_users)
@@ -1115,7 +1151,9 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         else:
             tasks.append(
                 asyncio.create_task(
-                    user_worker(i, config, ws, connector, stop_event, start_time, active_users, rate_limiter)
+                    user_worker(
+                        i, config, ws, connector, stop_event, start_time, active_users, rate_limiter
+                    )
                 )
             )
         if ramp_delay > 0 and i < num_users - 1:
@@ -1150,6 +1188,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
 # Autofind (auto-ramping / step load)
 # ---------------------------------------------------------------------------
 
+
 def _step_passed(step: StepResult, config: AutofindConfig) -> bool:
     """Check whether a step result meets the autofind thresholds."""
     if step.error_rate > config.max_error_rate:
@@ -1159,8 +1198,9 @@ def _step_passed(step: StepResult, config: AutofindConfig) -> bool:
     return True
 
 
-def _extract_step_result(stats: WorkerStats, duration: float, num_users: int,
-                         config: AutofindConfig) -> StepResult:
+def _extract_step_result(
+    stats: WorkerStats, duration: float, num_users: int, config: AutofindConfig
+) -> StepResult:
     """Extract a StepResult from merged WorkerStats."""
     rps = stats.total_requests / duration if duration > 0 else 0.0
     error_rate = (stats.errors / stats.total_requests * 100) if stats.total_requests > 0 else 0.0
@@ -1197,10 +1237,15 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     and first bad user count to refine the answer.
     """
     logger.info("Autofind: ramping load on %s", config.url)
-    logger.info("  Thresholds: max error rate=%s%%, max p95=%ss",
-                config.max_error_rate, config.max_p95)
-    logger.info("  Step duration: %ss, start users: %s, max users: %s",
-                config.step_duration, config.start_users, config.max_users)
+    logger.info(
+        "  Thresholds: max error rate=%s%%, max p95=%ss", config.max_error_rate, config.max_p95
+    )
+    logger.info(
+        "  Step duration: %ss, start users: %s, max users: %s",
+        config.step_duration,
+        config.start_users,
+        config.max_users,
+    )
     logger.info("  Step multiplier: %sx", config.step_multiplier)
     logger.info("")
 
@@ -1231,9 +1276,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
         result = await _run_step(current_users)
         steps.append(result)
         status = "OK" if result.passed else "FAIL"
-        logger.info("  %s rps, p95=%s, err=%s%% -> %s",
-                     f"{result.rps:.1f}", _format_latency_short(result.p95),
-                     f"{result.error_rate:.1f}", status)
+        logger.info(
+            "  %s rps, p95=%s, err=%s%% -> %s",
+            f"{result.rps:.1f}",
+            _format_latency_short(result.p95),
+            f"{result.error_rate:.1f}",
+            status,
+        )
 
         if result.passed:
             last_good = current_users
@@ -1262,9 +1311,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
             result = await _run_step(mid)
             steps.append(result)
             status = "OK" if result.passed else "FAIL"
-            logger.info("  %s rps, p95=%s, err=%s%% -> %s",
-                         f"{result.rps:.1f}", _format_latency_short(result.p95),
-                         f"{result.error_rate:.1f}", status)
+            logger.info(
+                "  %s rps, p95=%s, err=%s%% -> %s",
+                f"{result.rps:.1f}",
+                _format_latency_short(result.p95),
+                f"{result.error_rate:.1f}",
+                status,
+            )
 
             if result.passed:
                 lo = mid
@@ -1278,8 +1331,9 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
     return steps
 
 
-def _write_autofind_json(config: AutofindConfig, steps: list[StepResult],
-                         max_users: int | None) -> None:
+def _write_autofind_json(
+    config: AutofindConfig, steps: list[StepResult], max_users: int | None
+) -> None:
     """Write autofind results to a JSON file."""
     data = {
         "url": config.url,

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def parse_header(s: str) -> tuple[str, str]:
     """Parse a 'Name: Value' header string into a (name, value) tuple."""
     if ":" not in s:
@@ -52,135 +53,326 @@ def parse_header(s: str) -> tuple[str, str]:
 def _add_core_options(parser: argparse.ArgumentParser) -> None:
     """Add core HTTP and connection options to the parser."""
     parser.add_argument("url", nargs="?", default=None, help="Target URL to benchmark")
-    parser.add_argument("-c", "--connections", type=int, default=DEFAULT_CONNECTIONS,
-                        help=f"Number of concurrent connections (default: {DEFAULT_CONNECTIONS})")
-    parser.add_argument("-d", "--duration", type=float, default=None,
-                        help="Duration of test in seconds (default: 10, ignored if -n is set)")
-    parser.add_argument("-n", "--num-requests", type=int, default=None,
-                        help="Total number of requests to make (ab-style, overrides -d)")
-    parser.add_argument("-t", "--threads", type=int, default=DEFAULT_THREADS,
-                        help=f"Number of worker groups (default: {DEFAULT_THREADS})")
-    parser.add_argument("-m", "--method", default="GET",
-                        help="HTTP method (default: GET)")
-    parser.add_argument("-H", "--header", action="append", type=parse_header,
-                        default=[], dest="headers",
-                        help="HTTP header (e.g. -H 'Content-Type: application/json')")
-    parser.add_argument("-b", "--body", default=None,
-                        help="Request body string")
-    parser.add_argument("-p", "--post-file", default=None,
-                        help="File containing POST body data (ab-style)")
-    parser.add_argument("-A", "--basic-auth", default=None, metavar="user:pass",
-                        help="Basic HTTP authentication (ab-style)")
-    parser.add_argument("-C", "--cookie", action="append", default=[], dest="cookies",
-                        help="Cookie 'name=value' (repeatable, ab-style)")
-    parser.add_argument("-k", "--keepalive", action="store_true", default=True,
-                        help="Enable keep-alive (default: on)")
-    parser.add_argument("--no-keepalive", action="store_true", default=False,
-                        help="Disable keep-alive (close connection after each request)")
-    parser.add_argument("-l", "--verify-length", action="store_true", default=False,
-                        help="Verify response Content-Length consistency (ab-style)")
-    parser.add_argument("-v", "--verbosity", type=int, default=0,
-                        help="Verbosity level: 2=warnings, 3=status codes, 4=headers+body info")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
-                        help=f"Request timeout in seconds (default: {DEFAULT_TIMEOUT})")
-    parser.add_argument("--ssl-verify", action="store_true", default=False,
-                        help="Verify SSL certificates (default: off, or set PYWRKR_SSL_VERIFY=1)")
-    parser.add_argument("--ca-bundle", default=None, metavar="FILE",
-                        help="Path to CA bundle for SSL verification (or set PYWRKR_CA_BUNDLE)")
-    parser.add_argument("-R", "--random-param", action="store_true", default=False,
-                        help="Append a unique random query parameter (_cb=<uuid>) to each request "
-                             "URL to bypass HTTP caching")
+    parser.add_argument(
+        "-c",
+        "--connections",
+        type=int,
+        default=DEFAULT_CONNECTIONS,
+        help=f"Number of concurrent connections (default: {DEFAULT_CONNECTIONS})",
+    )
+    parser.add_argument(
+        "-d",
+        "--duration",
+        type=float,
+        default=None,
+        help="Duration of test in seconds (default: 10, ignored if -n is set)",
+    )
+    parser.add_argument(
+        "-n",
+        "--num-requests",
+        type=int,
+        default=None,
+        help="Total number of requests to make (ab-style, overrides -d)",
+    )
+    parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=DEFAULT_THREADS,
+        help=f"Number of worker groups (default: {DEFAULT_THREADS})",
+    )
+    parser.add_argument("-m", "--method", default="GET", help="HTTP method (default: GET)")
+    parser.add_argument(
+        "-H",
+        "--header",
+        action="append",
+        type=parse_header,
+        default=[],
+        dest="headers",
+        help="HTTP header (e.g. -H 'Content-Type: application/json')",
+    )
+    parser.add_argument("-b", "--body", default=None, help="Request body string")
+    parser.add_argument(
+        "-p", "--post-file", default=None, help="File containing POST body data (ab-style)"
+    )
+    parser.add_argument(
+        "-A",
+        "--basic-auth",
+        default=None,
+        metavar="user:pass",
+        help="Basic HTTP authentication (ab-style)",
+    )
+    parser.add_argument(
+        "-C",
+        "--cookie",
+        action="append",
+        default=[],
+        dest="cookies",
+        help="Cookie 'name=value' (repeatable, ab-style)",
+    )
+    parser.add_argument(
+        "-k",
+        "--keepalive",
+        action="store_true",
+        default=True,
+        help="Enable keep-alive (default: on)",
+    )
+    parser.add_argument(
+        "--no-keepalive",
+        action="store_true",
+        default=False,
+        help="Disable keep-alive (close connection after each request)",
+    )
+    parser.add_argument(
+        "-l",
+        "--verify-length",
+        action="store_true",
+        default=False,
+        help="Verify response Content-Length consistency (ab-style)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbosity",
+        type=int,
+        default=0,
+        help="Verbosity level: 2=warnings, 3=status codes, 4=headers+body info",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"Request timeout in seconds (default: {DEFAULT_TIMEOUT})",
+    )
+    parser.add_argument(
+        "--ssl-verify",
+        action="store_true",
+        default=False,
+        help="Verify SSL certificates (default: off, or set PYWRKR_SSL_VERIFY=1)",
+    )
+    parser.add_argument(
+        "--ca-bundle",
+        default=None,
+        metavar="FILE",
+        help="Path to CA bundle for SSL verification (or set PYWRKR_CA_BUNDLE)",
+    )
+    parser.add_argument(
+        "-R",
+        "--random-param",
+        action="store_true",
+        default=False,
+        help="Append a unique random query parameter (_cb=<uuid>) to each request "
+        "URL to bypass HTTP caching",
+    )
 
 
 def _add_output_options(parser: argparse.ArgumentParser) -> None:
     """Add output format and reporting options to the parser."""
-    parser.add_argument("-e", "--csv", default=None, metavar="FILE",
-                        help="Write CSV percentile table to FILE (ab-style)")
-    parser.add_argument("-w", "--html", action="store_true", default=False,
-                        help="Print results as HTML table (ab-style)")
-    parser.add_argument("--json", default=None, metavar="FILE",
-                        help="Write JSON results to FILE")
-    parser.add_argument("--html-report", default=None, metavar="FILE",
-                        help="Generate interactive Gatling-style HTML report to FILE")
-    parser.add_argument("--live", action="store_true", default=False,
-                        help="Show a live TUI dashboard during the benchmark "
-                             "(requires rich: pip install pywrkr[tui])")
-    parser.add_argument("--latency-breakdown", action="store_true", default=False,
-                        help="Show detailed latency breakdown per phase "
-                             "(DNS, TCP connect, TLS, TTFB, transfer)")
-    parser.add_argument("--tag", action="append", default=[], dest="tags",
-                        help="Metadata tag as key=value (repeatable, e.g. --tag environment=prod)")
-    parser.add_argument("--otel-endpoint", default=None, metavar="URL",
-                        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP")
-    parser.add_argument("--prom-remote-write", default=None, metavar="URL",
-                        help="Push metrics to a Prometheus Pushgateway-compatible endpoint")
-    parser.add_argument("--threshold", "--th", action="append", default=[], dest="thresholds",
-                        help="SLO threshold expression (repeatable, e.g. --threshold 'p95 < 300ms'). "
-                             "Exit code 2 if any threshold is breached.")
+    parser.add_argument(
+        "-e",
+        "--csv",
+        default=None,
+        metavar="FILE",
+        help="Write CSV percentile table to FILE (ab-style)",
+    )
+    parser.add_argument(
+        "-w",
+        "--html",
+        action="store_true",
+        default=False,
+        help="Print results as HTML table (ab-style)",
+    )
+    parser.add_argument("--json", default=None, metavar="FILE", help="Write JSON results to FILE")
+    parser.add_argument(
+        "--html-report",
+        default=None,
+        metavar="FILE",
+        help="Generate interactive Gatling-style HTML report to FILE",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Show a live TUI dashboard during the benchmark "
+        "(requires rich: pip install pywrkr[tui])",
+    )
+    parser.add_argument(
+        "--latency-breakdown",
+        action="store_true",
+        default=False,
+        help="Show detailed latency breakdown per phase (DNS, TCP connect, TLS, TTFB, transfer)",
+    )
+    parser.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        dest="tags",
+        help="Metadata tag as key=value (repeatable, e.g. --tag environment=prod)",
+    )
+    parser.add_argument(
+        "--otel-endpoint",
+        default=None,
+        metavar="URL",
+        help="Export metrics to an OpenTelemetry collector via OTLP/HTTP",
+    )
+    parser.add_argument(
+        "--prom-remote-write",
+        default=None,
+        metavar="URL",
+        help="Push metrics to a Prometheus Pushgateway-compatible endpoint",
+    )
+    parser.add_argument(
+        "--threshold",
+        "--th",
+        action="append",
+        default=[],
+        dest="thresholds",
+        help="SLO threshold expression (repeatable, e.g. --threshold 'p95 < 300ms'). "
+        "Exit code 2 if any threshold is breached.",
+    )
 
 
 def _add_user_simulation_options(parser: argparse.ArgumentParser) -> None:
     """Add user simulation mode options to the parser."""
-    parser.add_argument("-u", "--users", type=int, default=None,
-                        help="Number of virtual users (enables user simulation mode)")
-    parser.add_argument("--ramp-up", type=float, default=0,
-                        help="Ramp-up period in seconds to start all users (default: 0)")
-    parser.add_argument("--think-time", type=float, default=1.0,
-                        help="Mean think time in seconds between requests per user (default: 1.0)")
-    parser.add_argument("--think-jitter", type=float, default=0.5,
-                        help="Think time jitter factor 0-1 (default: 0.5, e.g. 1s +/-50%%)")
+    parser.add_argument(
+        "-u",
+        "--users",
+        type=int,
+        default=None,
+        help="Number of virtual users (enables user simulation mode)",
+    )
+    parser.add_argument(
+        "--ramp-up",
+        type=float,
+        default=0,
+        help="Ramp-up period in seconds to start all users (default: 0)",
+    )
+    parser.add_argument(
+        "--think-time",
+        type=float,
+        default=1.0,
+        help="Mean think time in seconds between requests per user (default: 1.0)",
+    )
+    parser.add_argument(
+        "--think-jitter",
+        type=float,
+        default=0.5,
+        help="Think time jitter factor 0-1 (default: 0.5, e.g. 1s +/-50%%)",
+    )
 
 
 def _add_rate_and_traffic_options(parser: argparse.ArgumentParser) -> None:
     """Add rate limiting and traffic shaping options to the parser."""
-    parser.add_argument("--rate", type=float, default=None,
-                        help="Target requests per second (constant rate mode)")
-    parser.add_argument("--rate-ramp", type=float, default=None,
-                        help="Linearly ramp rate from --rate to this value over the duration")
-    parser.add_argument("--traffic-profile", default=None, metavar="PROFILE",
-                        help="Traffic shaping profile. Built-in: sine, step, sawtooth, "
-                             "square, spike, business-hours. CSV replay: csv:file.csv. "
-                             "Parameters: 'sine:cycles=3,min=0.2', "
-                             "'step:levels=100,500,1000', 'spike:interval=10,multiplier=5'. "
-                             "Requires --rate (used as base/peak rate)")
-    parser.add_argument("--scenario", default=None, metavar="FILE",
-                        help="Path to a JSON/YAML scenario file for scripted multi-step requests")
+    parser.add_argument(
+        "--rate", type=float, default=None, help="Target requests per second (constant rate mode)"
+    )
+    parser.add_argument(
+        "--rate-ramp",
+        type=float,
+        default=None,
+        help="Linearly ramp rate from --rate to this value over the duration",
+    )
+    parser.add_argument(
+        "--traffic-profile",
+        default=None,
+        metavar="PROFILE",
+        help="Traffic shaping profile. Built-in: sine, step, sawtooth, "
+        "square, spike, business-hours. CSV replay: csv:file.csv. "
+        "Parameters: 'sine:cycles=3,min=0.2', "
+        "'step:levels=100,500,1000', 'spike:interval=10,multiplier=5'. "
+        "Requires --rate (used as base/peak rate)",
+    )
+    parser.add_argument(
+        "--scenario",
+        default=None,
+        metavar="FILE",
+        help="Path to a JSON/YAML scenario file for scripted multi-step requests",
+    )
 
 
 def _add_autofind_options(parser: argparse.ArgumentParser) -> None:
     """Add autofind capacity-testing options to the parser."""
-    parser.add_argument("--autofind", action="store_true", default=False,
-                        help="Auto-ramp load to find maximum sustainable capacity")
-    parser.add_argument("--max-error-rate", type=float, default=1.0,
-                        help="Autofind: stop when error rate exceeds this percent (default: 1.0)")
-    parser.add_argument("--max-p95", type=float, default=5.0,
-                        help="Autofind: stop when p95 latency exceeds this in seconds (default: 5.0)")
-    parser.add_argument("--step-duration", type=float, default=30.0,
-                        help="Autofind: duration of each step test in seconds (default: 30)")
-    parser.add_argument("--start-users", type=int, default=10,
-                        help="Autofind: starting number of users (default: 10)")
-    parser.add_argument("--max-users", type=int, default=10000,
-                        help="Autofind: maximum users to try (default: 10000)")
-    parser.add_argument("--step-multiplier", type=float, default=2.0,
-                        help="Autofind: multiply users by this each step (default: 2.0)")
+    parser.add_argument(
+        "--autofind",
+        action="store_true",
+        default=False,
+        help="Auto-ramp load to find maximum sustainable capacity",
+    )
+    parser.add_argument(
+        "--max-error-rate",
+        type=float,
+        default=1.0,
+        help="Autofind: stop when error rate exceeds this percent (default: 1.0)",
+    )
+    parser.add_argument(
+        "--max-p95",
+        type=float,
+        default=5.0,
+        help="Autofind: stop when p95 latency exceeds this in seconds (default: 5.0)",
+    )
+    parser.add_argument(
+        "--step-duration",
+        type=float,
+        default=30.0,
+        help="Autofind: duration of each step test in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--start-users",
+        type=int,
+        default=10,
+        help="Autofind: starting number of users (default: 10)",
+    )
+    parser.add_argument(
+        "--max-users",
+        type=int,
+        default=10000,
+        help="Autofind: maximum users to try (default: 10000)",
+    )
+    parser.add_argument(
+        "--step-multiplier",
+        type=float,
+        default=2.0,
+        help="Autofind: multiply users by this each step (default: 2.0)",
+    )
 
 
 def _add_distributed_options(parser: argparse.ArgumentParser) -> None:
     """Add distributed mode and multi-URL options to the parser."""
-    parser.add_argument("--url-file", default=None, metavar="FILE",
-                        help="File with URLs to benchmark (one per line, optional METHOD prefix). "
-                             "Runs each URL sequentially with the same settings and prints a comparison.")
-    parser.add_argument("--master", action="store_true", default=False,
-                        help="Run as master node in distributed mode")
-    parser.add_argument("--expect-workers", type=int, default=None, metavar="N",
-                        help="Number of workers the master should wait for (required with --master)")
-    parser.add_argument("--bind", default="0.0.0.0", metavar="HOST",
-                        help="Master bind address (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=DEFAULT_MASTER_PORT, metavar="PORT",
-                        help=f"Master/worker port (default: {DEFAULT_MASTER_PORT})")
-    parser.add_argument("--worker", default=None, metavar="HOST:PORT",
-                        help="Run as worker node, connecting to master at HOST:PORT")
-
+    parser.add_argument(
+        "--url-file",
+        default=None,
+        metavar="FILE",
+        help="File with URLs to benchmark (one per line, optional METHOD prefix). "
+        "Runs each URL sequentially with the same settings and prints a comparison.",
+    )
+    parser.add_argument(
+        "--master",
+        action="store_true",
+        default=False,
+        help="Run as master node in distributed mode",
+    )
+    parser.add_argument(
+        "--expect-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of workers the master should wait for (required with --master)",
+    )
+    parser.add_argument(
+        "--bind", default="0.0.0.0", metavar="HOST", help="Master bind address (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_MASTER_PORT,
+        metavar="PORT",
+        help=f"Master/worker port (default: {DEFAULT_MASTER_PORT})",
+    )
+    parser.add_argument(
+        "--worker",
+        default=None,
+        metavar="HOST:PORT",
+        help="Run as worker node, connecting to master at HOST:PORT",
+    )
 
 
 def _build_har_import_parser() -> argparse.ArgumentParser:
@@ -209,29 +401,74 @@ Examples:
         """,
     )
     parser.add_argument("har_file", help="Path to the HAR file to convert")
-    parser.add_argument("-o", "--output", default=None, metavar="FILE",
-                        help="Output file path (default: print to stdout)")
-    parser.add_argument("--format", choices=["scenario", "url-file"], default="scenario",
-                        help="Output format (default: scenario)")
-    parser.add_argument("--name", default=None,
-                        help="Scenario name (default: derived from HAR filename)")
-    parser.add_argument("--include-static", action="store_true", default=False,
-                        help="Include static assets (CSS, JS, images, fonts)")
-    parser.add_argument("--domain", action="append", default=[], dest="domains",
-                        help="Only include requests to this domain (repeatable)")
-    parser.add_argument("--exclude", action="append", default=[], dest="exclude_patterns",
-                        help="Exclude URLs matching this regex pattern (repeatable)")
-    parser.add_argument("--include", action="append", default=[], dest="include_patterns",
-                        help="Only include URLs matching this regex pattern (repeatable)")
-    parser.add_argument("--preserve-headers", action="store_true", default=False,
-                        help="Preserve request headers from the HAR recording "
-                             "(default: only keep Content-Type for POST/PUT)")
-    parser.add_argument("--no-think-time", action="store_true", default=False,
-                        help="Don't derive think times from recorded request timing")
-    parser.add_argument("--think-time-multiplier", type=float, default=1.0,
-                        help="Multiply derived think times by this factor (default: 1.0)")
-    parser.add_argument("--assert-status", action="store_true", default=False,
-                        help="Add status code assertions from recorded responses")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        metavar="FILE",
+        help="Output file path (default: print to stdout)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["scenario", "url-file"],
+        default="scenario",
+        help="Output format (default: scenario)",
+    )
+    parser.add_argument(
+        "--name", default=None, help="Scenario name (default: derived from HAR filename)"
+    )
+    parser.add_argument(
+        "--include-static",
+        action="store_true",
+        default=False,
+        help="Include static assets (CSS, JS, images, fonts)",
+    )
+    parser.add_argument(
+        "--domain",
+        action="append",
+        default=[],
+        dest="domains",
+        help="Only include requests to this domain (repeatable)",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        dest="exclude_patterns",
+        help="Exclude URLs matching this regex pattern (repeatable)",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        dest="include_patterns",
+        help="Only include URLs matching this regex pattern (repeatable)",
+    )
+    parser.add_argument(
+        "--preserve-headers",
+        action="store_true",
+        default=False,
+        help="Preserve request headers from the HAR recording "
+        "(default: only keep Content-Type for POST/PUT)",
+    )
+    parser.add_argument(
+        "--no-think-time",
+        action="store_true",
+        default=False,
+        help="Don't derive think times from recorded request timing",
+    )
+    parser.add_argument(
+        "--think-time-multiplier",
+        type=float,
+        default=1.0,
+        help="Multiply derived think times by this factor (default: 1.0)",
+    )
+    parser.add_argument(
+        "--assert-status",
+        action="store_true",
+        default=False,
+        help="Add status code assertions from recorded responses",
+    )
     return parser
 
 
@@ -358,14 +595,13 @@ def _parse_and_validate_args(
 
     # --- Load scenario file (JSON or YAML) if provided ---
     scenario = None
-    if hasattr(args, 'scenario') and args.scenario:
+    if hasattr(args, "scenario") and args.scenario:
         scenario = load_scenario(args.scenario)
 
     headers = dict(args.headers)
     keepalive = not args.no_keepalive
 
     # --- Build SSL config from CLI args + environment ---
-    from pywrkr.config import SSLConfig
     env_ssl = SSLConfig.from_env()
     ssl_config = SSLConfig(
         verify=args.ssl_verify or env_ssl.verify,
@@ -446,7 +682,12 @@ def _parse_and_validate_args(
             parser.error(f"Invalid --traffic-profile: {e}")
 
     # Scenario mode defaults to 10s if no duration/count is specified
-    if config.scenario and config.users is None and config.duration is None and config.num_requests is None:
+    if (
+        config.scenario
+        and config.users is None
+        and config.duration is None
+        and config.num_requests is None
+    ):
         config.duration = 10.0
 
     return config, args

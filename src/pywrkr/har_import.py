@@ -35,24 +35,56 @@ class HarImportConfig:
     include_patterns: list[str] = field(default_factory=list)
     allowed_domains: list[str] = field(default_factory=list)
     preserve_headers: bool = False
-    skip_headers: list[str] = field(default_factory=lambda: [
-        "accept-encoding", "connection", "host", "user-agent",
-        "content-length", "sec-ch-ua", "sec-ch-ua-mobile",
-        "sec-ch-ua-platform", "sec-fetch-dest", "sec-fetch-mode",
-        "sec-fetch-site", "sec-fetch-user", "upgrade-insecure-requests",
-        "referer", "origin", "cookie",
-    ])
+    skip_headers: list[str] = field(
+        default_factory=lambda: [
+            "accept-encoding",
+            "connection",
+            "host",
+            "user-agent",
+            "content-length",
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "sec-fetch-site",
+            "sec-fetch-user",
+            "upgrade-insecure-requests",
+            "referer",
+            "origin",
+            "cookie",
+        ]
+    )
     add_think_time: bool = True
     think_time_multiplier: float = 1.0
     assert_status: bool = False
 
 
 # File extensions considered "static" (images, fonts, stylesheets, scripts)
-_STATIC_EXTENSIONS = frozenset({
-    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot", ".otf", ".map", ".webp",
-    ".avif", ".mp4", ".webm", ".mp3", ".ogg",
-})
+_STATIC_EXTENSIONS = frozenset(
+    {
+        ".css",
+        ".js",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".otf",
+        ".map",
+        ".webp",
+        ".avif",
+        ".mp4",
+        ".webm",
+        ".mp3",
+        ".ogg",
+    }
+)
 
 
 def _is_static(url: str) -> bool:
@@ -125,15 +157,17 @@ def parse_har(path: str) -> list[HarEntry]:
         # Timing
         time_ms = entry.get("time", 0.0)
 
-        entries.append(HarEntry(
-            url=url,
-            method=method,
-            headers=headers,
-            body=body if body else None,
-            content_type=content_type,
-            status=status,
-            time_ms=time_ms,
-        ))
+        entries.append(
+            HarEntry(
+                url=url,
+                method=method,
+                headers=headers,
+                body=body if body else None,
+                content_type=content_type,
+                status=status,
+                time_ms=time_ms,
+            )
+        )
 
     return entries
 
@@ -152,20 +186,15 @@ def filter_entries(
         # Domain filtering
         if config.allowed_domains:
             domain = urlparse(entry.url).hostname or ""
-            if not any(domain == d or domain.endswith("." + d)
-                       for d in config.allowed_domains):
+            if not any(domain == d or domain.endswith("." + d) for d in config.allowed_domains):
                 continue
 
         # Exclude patterns
-        if config.exclude_patterns and _matches_patterns(
-            entry.url, config.exclude_patterns
-        ):
+        if config.exclude_patterns and _matches_patterns(entry.url, config.exclude_patterns):
             continue
 
         # Include patterns (if specified, only matching URLs pass)
-        if config.include_patterns and not _matches_patterns(
-            entry.url, config.include_patterns
-        ):
+        if config.include_patterns and not _matches_patterns(entry.url, config.include_patterns):
             continue
 
         result.append(entry)
@@ -185,11 +214,7 @@ def _build_step_headers(
         return {}
 
     skip = set(config.skip_headers)
-    return {
-        name: value
-        for name, value in entry.headers.items()
-        if name.lower() not in skip
-    }
+    return {name: value for name, value in entry.headers.items() if name.lower() not in skip}
 
 
 def _compute_think_times(
@@ -206,7 +231,6 @@ def _compute_think_times(
 
     think_times = [0.0]
     # Use cumulative time to estimate gaps
-    cumulative = 0.0
     for i in range(1, len(entries)):
         prev_time = entries[i - 1].time_ms
         gap = max(0.0, prev_time)  # milliseconds
@@ -354,7 +378,9 @@ def convert_har(
     elif output_format == "url-file":
         content = har_to_url_file(filtered)
     else:
-        raise ValueError(f"Unknown output format: {output_format!r} (expected 'scenario' or 'url-file')")
+        raise ValueError(
+            f"Unknown output format: {output_format!r} (expected 'scenario' or 'url-file')"
+        )
 
     if output_path:
         with open(output_path, "w", encoding="utf-8") as f:

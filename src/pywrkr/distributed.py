@@ -148,9 +148,13 @@ def merge_worker_stats(stats_list: list[WorkerStats]) -> WorkerStats:
     return merged
 
 
-async def run_master(config: BenchmarkConfig, host: str, port: int, expect_workers: int) -> tuple[WorkerStats, int] | None:
+async def run_master(
+    config: BenchmarkConfig, host: str, port: int, expect_workers: int
+) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results."""
-    logger.info("Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers)
+    logger.info(
+        "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
+    )
 
     worker_connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
     ready_event = asyncio.Event()
@@ -158,8 +162,13 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
     async def handle_worker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
         worker_connections.append((reader, writer))
-        logger.info("  Worker connected: %s:%s (%s/%s)",
-                    addr[0], addr[1], len(worker_connections), expect_workers)
+        logger.info(
+            "  Worker connected: %s:%s (%s/%s)",
+            addr[0],
+            addr[1],
+            len(worker_connections),
+            expect_workers,
+        )
         if len(worker_connections) >= expect_workers:
             ready_event.set()
 
@@ -169,8 +178,11 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         try:
             await asyncio.wait_for(ready_event.wait(), timeout=300)
         except asyncio.TimeoutError:
-            logger.error("Master: timed out waiting for workers (%s/%s connected)",
-                        len(worker_connections), expect_workers)
+            logger.error(
+                "Master: timed out waiting for workers (%s/%s connected)",
+                len(worker_connections),
+                expect_workers,
+            )
             for _, w in worker_connections:
                 w.close()
             return
@@ -186,13 +198,20 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         all_stats: list[WorkerStats] = []
         for i, (reader, writer) in enumerate(worker_connections):
             try:
-                msg = await asyncio.wait_for(_recv_msg(reader), timeout=config.duration * 3 + 120 if config.duration else 600)
+                msg = await asyncio.wait_for(
+                    _recv_msg(reader), timeout=config.duration * 3 + 120 if config.duration else 600
+                )
                 if msg.get("type") == "result":
                     ws = _deserialize_stats(msg["stats"])
                     all_stats.append(ws)
                     addr = writer.get_extra_info("peername")
-                    logger.info("  Worker %s:%s finished: %s requests, %s errors",
-                               addr[0], addr[1], f"{ws.total_requests:,}", ws.errors)
+                    logger.info(
+                        "  Worker %s:%s finished: %s requests, %s errors",
+                        addr[0],
+                        addr[1],
+                        f"{ws.total_requests:,}",
+                        ws.errors,
+                    )
                 else:
                     logger.error("  Worker %s: unexpected message type: %s", i, msg.get("type"))
             except (asyncio.TimeoutError, ConnectionError, OSError) as e:
@@ -206,11 +225,6 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
 
     # Merge and report
     merged = merge_worker_stats(all_stats)
-    total_duration = max(
-        sum(ws.total_requests for ws in all_stats) / (merged.total_requests / max(merged.latencies) if merged.latencies else 1),
-        config.duration or 10.0,
-    ) if merged.latencies else (config.duration or 10.0)
-
     # Use actual duration from config for reporting
     actual_duration = config.duration or 10.0
 
@@ -237,8 +251,13 @@ async def run_master(config: BenchmarkConfig, host: str, port: int, expect_worke
         rate=config.rate,
         rate_ramp=config.rate_ramp,
     )
-    print_results(merged, actual_duration, report_config.connections,
-                  time.monotonic() - actual_duration, report_config)
+    print_results(
+        merged,
+        actual_duration,
+        report_config.connections,
+        time.monotonic() - actual_duration,
+        report_config,
+    )
 
     # Evaluate SLO thresholds
     exit_code = 0
@@ -274,8 +293,11 @@ async def run_worker_node(master_host: str, master_port: int) -> None:
     else:
         stats, _ = await run_benchmark(config)
 
-    logger.info("Worker: benchmark complete. %s requests, %s errors",
-                f"{stats.total_requests:,}", stats.errors)
+    logger.info(
+        "Worker: benchmark complete. %s requests, %s errors",
+        f"{stats.total_requests:,}",
+        stats.errors,
+    )
 
     # Send results back to master
     await _send_msg(writer, {"type": "result", "stats": _serialize_stats(stats)})

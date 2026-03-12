@@ -28,6 +28,7 @@ DEFAULT_AUTOFIND_STEP_MULTIPLIER = 2.0
 @dataclass
 class SSLConfig:
     """SSL/TLS configuration for HTTP connections."""
+
     verify: bool = False  # Whether to verify SSL certificates
     ca_bundle: str | None = None  # Path to CA bundle file
 
@@ -40,6 +41,7 @@ class SSLConfig:
             PYWRKR_CA_BUNDLE: Path to a custom CA bundle file.
         """
         import os
+
         verify_env = os.environ.get("PYWRKR_SSL_VERIFY", "").lower()
         verify = verify_env in ("1", "true", "yes")
         ca_bundle = os.environ.get("PYWRKR_CA_BUNDLE") or None
@@ -59,12 +61,13 @@ class RequestResult:
 @dataclass
 class LatencyBreakdown:
     """Per-request latency breakdown into phases."""
-    dns: float = 0.0       # DNS lookup time (seconds)
-    connect: float = 0.0   # TCP connect time (seconds)
-    tls: float = 0.0       # TLS handshake time (seconds)
-    ttfb: float = 0.0      # Time to first byte (seconds)
+
+    dns: float = 0.0  # DNS lookup time (seconds)
+    connect: float = 0.0  # TCP connect time (seconds)
+    tls: float = 0.0  # TLS handshake time (seconds)
+    ttfb: float = 0.0  # Time to first byte (seconds)
     transfer: float = 0.0  # Response body transfer time (seconds)
-    is_reused: bool = False # True if the connection was reused (DNS/connect/TLS will be 0)
+    is_reused: bool = False  # True if the connection was reused (DNS/connect/TLS will be 0)
 
 
 @dataclass
@@ -109,12 +112,15 @@ class BenchmarkConfig:
     users: int | None = None  # number of virtual users
     ramp_up: float = 0.0  # seconds to ramp up all users
     think_time: float = 0.0  # mean think time between requests per user (seconds)
-    think_time_jitter: float = DEFAULT_THINK_TIME_JITTER  # jitter factor (0-1): actual = think * uniform(1-jitter, 1+jitter)
+    # jitter factor (0-1): actual = think * uniform(1-jitter, 1+jitter)
+    think_time_jitter: float = DEFAULT_THINK_TIME_JITTER
     random_param: bool = False  # append random _cb=<uuid> query param per request (cache-buster)
     live_dashboard: bool = False  # show live TUI dashboard (requires rich)
     # Rate limiting mode
     rate: float | None = None  # target requests per second (None = unlimited)
-    rate_ramp: float | None = None  # ramp rate target: linearly increase from rate to rate_ramp over duration
+    rate_ramp: float | None = (
+        None  # ramp rate target: linearly increase from rate to rate_ramp over duration
+    )
     # Traffic profile (advanced traffic shaping)
     traffic_profile: "TrafficProfile | None" = None  # noqa: F821
     # Scenario mode
@@ -137,15 +143,17 @@ class BenchmarkConfig:
 @dataclass
 class Threshold:
     """An SLO threshold expression (e.g. 'p95 < 300ms')."""
-    metric: str       # e.g. "p95"
-    operator: str     # e.g. "<"
-    value: float      # in seconds for latency, percent for error_rate, raw for rps
-    raw_expr: str     # original string for display
+
+    metric: str  # e.g. "p95"
+    operator: str  # e.g. "<"
+    value: float  # in seconds for latency, percent for error_rate, raw for rps
+    raw_expr: str  # original string for display
 
 
 @dataclass
 class AutofindConfig:
     """Configuration for auto-ramping / step load mode."""
+
     url: str
     max_error_rate: float = DEFAULT_AUTOFIND_MAX_ERROR_RATE  # percent
     max_p95: float = DEFAULT_AUTOFIND_MAX_P95  # seconds
@@ -165,6 +173,7 @@ class AutofindConfig:
 @dataclass
 class StepResult:
     """Result of a single autofind step."""
+
     users: int
     rps: float
     p50: float
@@ -179,6 +188,7 @@ class StepResult:
 @dataclass
 class ScenarioStep:
     """A single step in a scripted scenario."""
+
     path: str
     method: str = "GET"
     body: str | dict | None = None
@@ -192,6 +202,7 @@ class ScenarioStep:
 @dataclass
 class Scenario:
     """A scripted multi-step scenario."""
+
     name: str = "Unnamed Scenario"
     think_time: float = 0.0
     steps: list[ScenarioStep] = field(default_factory=list)
@@ -210,7 +221,9 @@ def load_scenario(path: str) -> Scenario:
         try:
             import yaml
         except ImportError:
-            raise ImportError("pyyaml is required for YAML scenario files. Install with: pip install pyyaml") from None
+            raise ImportError(
+                "pyyaml is required for YAML scenario files. Install with: pip install pyyaml"
+            ) from None
         data = yaml.safe_load(content)
     elif ext == ".json":
         data = json.loads(content)
@@ -221,13 +234,18 @@ def load_scenario(path: str) -> Scenario:
         except json.JSONDecodeError:
             try:
                 import yaml
+
                 data = yaml.safe_load(content)
             except ImportError:
-                raise ValueError(f"Could not parse scenario file: {path}. "
-                                 f"Not valid JSON, and pyyaml is not installed for YAML parsing.") from None
+                raise ValueError(
+                    f"Could not parse scenario file: {path}. "
+                    f"Not valid JSON, and pyyaml is not installed for YAML parsing."
+                ) from None
 
     if not isinstance(data, dict):
-        raise ValueError(f"Scenario file must contain a JSON/YAML object, got {type(data).__name__}")
+        raise ValueError(
+            f"Scenario file must contain a JSON/YAML object, got {type(data).__name__}"
+        )
 
     if "steps" not in data or not isinstance(data["steps"], list):
         raise ValueError("Scenario file must contain a 'steps' list")
@@ -241,16 +259,20 @@ def load_scenario(path: str) -> Scenario:
             raise ValueError(f"Step {i} must be a dict, got {type(step_data).__name__}")
         if "path" not in step_data:
             raise ValueError(f"Step {i} must have a 'path' field")
-        steps.append(ScenarioStep(
-            path=step_data["path"],
-            method=step_data.get("method", "GET"),
-            body=step_data.get("body"),
-            headers=step_data.get("headers", {}),
-            assert_status=step_data.get("assert_status"),
-            assert_body_contains=step_data.get("assert_body_contains"),
-            think_time=step_data.get("think_time"),
-            name=step_data.get("name", f"Step {i + 1}: {step_data.get('method', 'GET')} {step_data['path']}"),
-        ))
+        steps.append(
+            ScenarioStep(
+                path=step_data["path"],
+                method=step_data.get("method", "GET"),
+                body=step_data.get("body"),
+                headers=step_data.get("headers", {}),
+                assert_status=step_data.get("assert_status"),
+                assert_body_contains=step_data.get("assert_body_contains"),
+                think_time=step_data.get("think_time"),
+                name=step_data.get(
+                    "name", f"Step {i + 1}: {step_data.get('method', 'GET')} {step_data['path']}"
+                ),
+            )
+        )
 
     return Scenario(
         name=data.get("name", "Unnamed Scenario"),
