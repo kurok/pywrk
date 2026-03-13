@@ -39,6 +39,24 @@ from pywrkr.config import (
 from pywrkr.traffic_profiles import RateLimiter
 
 # ---------------------------------------------------------------------------
+# Chart color constants
+# ---------------------------------------------------------------------------
+
+COLOR_GREEN = "rgba(76, 175, 80, 0.8)"
+COLOR_YELLOW = "rgba(255, 193, 7, 0.8)"
+COLOR_RED = "rgba(244, 67, 54, 0.8)"
+COLOR_BLUE = "rgba(33, 150, 243, 0.8)"
+COLOR_ORANGE = "rgba(255, 152, 0, 0.8)"
+COLOR_PURPLE = "rgba(156, 39, 176, 0.8)"
+COLOR_CYAN = "rgba(0, 188, 212, 0.8)"
+
+# Status code colors (slightly higher opacity for pie chart)
+STATUS_COLOR_2XX = "rgba(76, 175, 80, 0.85)"
+STATUS_COLOR_3XX = "rgba(33, 150, 243, 0.85)"
+STATUS_COLOR_4XX = "rgba(255, 152, 0, 0.85)"
+STATUS_COLOR_5XX = "rgba(244, 67, 54, 0.85)"
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -439,11 +457,11 @@ def generate_gatling_html_report(
             p95 = percentiles.get("p95", 0)
             edge_s = lo + i * step
             if edge_s < p50:
-                hist_colors.append("rgba(76, 175, 80, 0.8)")
+                hist_colors.append(COLOR_GREEN)
             elif edge_s < p95:
-                hist_colors.append("rgba(255, 193, 7, 0.8)")
+                hist_colors.append(COLOR_YELLOW)
             else:
-                hist_colors.append("rgba(244, 67, 54, 0.8)")
+                hist_colors.append(COLOR_RED)
 
     # -- Percentile curve --
     pct_labels = ["p50", "p75", "p90", "p95", "p99"]
@@ -469,13 +487,13 @@ def generate_gatling_html_report(
     for c in sc_labels:
         code = int(c)
         if 200 <= code < 300:
-            sc_colors.append("rgba(76, 175, 80, 0.85)")
+            sc_colors.append(STATUS_COLOR_2XX)
         elif 300 <= code < 400:
-            sc_colors.append("rgba(33, 150, 243, 0.85)")
+            sc_colors.append(STATUS_COLOR_3XX)
         elif 400 <= code < 500:
-            sc_colors.append("rgba(255, 152, 0, 0.85)")
+            sc_colors.append(STATUS_COLOR_4XX)
         else:
-            sc_colors.append("rgba(244, 67, 54, 0.85)")
+            sc_colors.append(STATUS_COLOR_5XX)
 
     # -- Latency breakdown --
     bd = results.get("latency_breakdown", {})
