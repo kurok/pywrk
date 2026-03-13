@@ -1,12 +1,15 @@
 """Output formatting, reporting, and observability exports for pywrkr."""
 
 import csv
+import importlib.resources
 import json
 import math
 import re
 import statistics
 import sys
 from collections import defaultdict
+from string import Template
+from typing import NamedTuple, TextIO
 
 # Optional third-party imports
 try:
@@ -39,6 +42,35 @@ from pywrkr.config import (
 from pywrkr.traffic_profiles import RateLimiter
 
 # ---------------------------------------------------------------------------
+# Chart color constants
+# ---------------------------------------------------------------------------
+
+COLOR_GREEN = "rgba(76, 175, 80, 0.8)"
+COLOR_YELLOW = "rgba(255, 193, 7, 0.8)"
+COLOR_RED = "rgba(244, 67, 54, 0.8)"
+COLOR_BLUE = "rgba(33, 150, 243, 0.8)"
+COLOR_ORANGE = "rgba(255, 152, 0, 0.8)"
+COLOR_PURPLE = "rgba(156, 39, 176, 0.8)"
+COLOR_CYAN = "rgba(0, 188, 212, 0.8)"
+
+# Status code colors (slightly higher opacity for pie chart)
+STATUS_COLOR_2XX = "rgba(76, 175, 80, 0.85)"
+STATUS_COLOR_3XX = "rgba(33, 150, 243, 0.85)"
+STATUS_COLOR_4XX = "rgba(255, 152, 0, 0.85)"
+STATUS_COLOR_5XX = "rgba(244, 67, 54, 0.85)"
+
+# ---------------------------------------------------------------------------
+# Template loader
+# ---------------------------------------------------------------------------
+
+
+def _load_template(name: str) -> Template:
+    """Load an HTML template from the templates package."""
+    ref = importlib.resources.files("pywrkr.templates").joinpath(name)
+    return Template(ref.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -66,7 +98,9 @@ def format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def print_latency_histogram(latencies: list[float], buckets: int = 20, file=sys.stdout) -> None:
+def print_latency_histogram(
+    latencies: list[float], buckets: int = 20, file: TextIO = sys.stdout
+) -> None:
     """Print an ASCII histogram of latency distribution."""
     if not latencies:
         return
@@ -216,7 +250,7 @@ def _compare(actual: float, operator: str, threshold: float) -> bool:
 
 def print_threshold_results(
     results: "list[tuple[Threshold, float, bool]]",
-    file=sys.stdout,
+    file: TextIO = sys.stdout,
 ) -> None:
     """Print a summary table of threshold evaluation results."""
     if not results:
@@ -243,7 +277,7 @@ def print_threshold_results(
     print(f"\n  Thresholds: {summary}", file=file)
 
 
-def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
+def print_percentiles(latencies: list[float], file: TextIO = sys.stdout) -> None:
     """Print latency percentiles table."""
     pairs = compute_percentiles(latencies)
     if not pairs:
@@ -254,7 +288,7 @@ def print_percentiles(latencies: list[float], file=sys.stdout) -> None:
 
 
 def print_rps_timeline(
-    timeline: list[tuple[float, int]], start: float, duration: float, file=sys.stdout
+    timeline: list[tuple[float, int]], start: float, duration: float, file: TextIO = sys.stdout
 ) -> None:
     """Print requests-per-second timeline."""
     if not timeline:
@@ -439,11 +473,11 @@ def generate_gatling_html_report(
             p95 = percentiles.get("p95", 0)
             edge_s = lo + i * step
             if edge_s < p50:
-                hist_colors.append("rgba(76, 175, 80, 0.8)")
+                hist_colors.append(COLOR_GREEN)
             elif edge_s < p95:
-                hist_colors.append("rgba(255, 193, 7, 0.8)")
+                hist_colors.append(COLOR_YELLOW)
             else:
-                hist_colors.append("rgba(244, 67, 54, 0.8)")
+                hist_colors.append(COLOR_RED)
 
     # -- Percentile curve --
     pct_labels = ["p50", "p75", "p90", "p95", "p99"]
@@ -469,13 +503,13 @@ def generate_gatling_html_report(
     for c in sc_labels:
         code = int(c)
         if 200 <= code < 300:
-            sc_colors.append("rgba(76, 175, 80, 0.85)")
+            sc_colors.append(STATUS_COLOR_2XX)
         elif 300 <= code < 400:
-            sc_colors.append("rgba(33, 150, 243, 0.85)")
+            sc_colors.append(STATUS_COLOR_3XX)
         elif 400 <= code < 500:
-            sc_colors.append("rgba(255, 152, 0, 0.85)")
+            sc_colors.append(STATUS_COLOR_4XX)
         else:
-            sc_colors.append("rgba(244, 67, 54, 0.85)")
+            sc_colors.append(STATUS_COLOR_5XX)
 
     # -- Latency breakdown --
     bd = results.get("latency_breakdown", {})
@@ -503,295 +537,70 @@ def generate_gatling_html_report(
 
     import json as _json
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pywrkr Report &mdash; {_html_escape(url)}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<style>
-  :root {{
-    --bg: #1a1a2e; --surface: #16213e; --card: #0f3460;
-    --accent: #e94560; --green: #4caf50; --yellow: #ffc107;
-    --text: #eee; --muted: #999; --border: #234;
-  }}
-  * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-         background: var(--bg); color: var(--text); padding: 0; }}
-  .header {{ background: linear-gradient(135deg, var(--surface), var(--card));
-             padding: 24px 32px; border-bottom: 3px solid var(--accent); }}
-  .header h1 {{ font-size: 1.6em; font-weight: 600; }}
-  .header h1 span {{ color: var(--accent); }}
-  .header .meta {{ color: var(--muted); font-size: 0.85em; margin-top: 6px; }}
-  .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
-  .indicators {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-                 gap: 16px; margin-bottom: 28px; }}
-  .indicator {{ background: var(--surface); border-radius: 10px; padding: 18px 20px;
-               border-left: 4px solid var(--accent); }}
-  .indicator .label {{ font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px;
-                       color: var(--muted); margin-bottom: 6px; }}
-  .indicator .value {{ font-size: 1.6em; font-weight: 700; }}
-  .indicator .value.green {{ color: var(--green); }}
-  .indicator .value.red {{ color: var(--accent); }}
-  .indicator .value.yellow {{ color: var(--yellow); }}
-  .charts {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }}
-  .chart-card {{ background: var(--surface); border-radius: 10px; padding: 20px; }}
-  .chart-card h3 {{ font-size: 0.95em; margin-bottom: 14px; color: var(--muted);
-                    text-transform: uppercase; letter-spacing: 0.5px; }}
-  .chart-card.full {{ grid-column: 1 / -1; }}
-  .errors-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-  .errors-table th, .errors-table td {{ padding: 8px 12px; text-align: left;
-                                        border-bottom: 1px solid var(--border); }}
-  .errors-table th {{ color: var(--muted); font-size: 0.8em; text-transform: uppercase; }}
-  .footer {{ text-align: center; padding: 20px; color: var(--muted); font-size: 0.8em; }}
-  .footer a {{ color: var(--accent); text-decoration: none; }}
-  @media (max-width: 768px) {{ .charts {{ grid-template-columns: 1fr; }} }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1><span>pywrkr</span> Benchmark Report</h1>
-  <div class="meta">
-    {_html_escape(method)} {_html_escape(url)} &bull; {mode} &bull;
-    {connections} connections &bull; {timestamp}
-  </div>
-</div>
-<div class="container">
+    # Pre-compute conditional CSS classes and display values
+    errors_class = "red" if stats.errors else "green"
+    p95_class = "yellow" if percentiles.get("p95", 0) > 1 else ""
+    p99_class = "red" if percentiles.get("p99", 0) > 2 else ""
+    bd_card_display = "display:block" if has_breakdown else "display:none"
 
-<!-- Indicators -->
-<div class="indicators">
-  <div class="indicator">
-    <div class="label">Total Requests</div>
-    <div class="value">{stats.total_requests:,}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Duration</div>
-    <div class="value">{duration:.1f}s</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Requests/sec</div>
-    <div class="value green">{results.get("requests_per_sec", 0):,.1f}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Errors</div>
-    <div class="value {"red" if stats.errors else "green"}">{stats.errors:,} ({
-        error_rate:.1f}%)</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Mean Latency</div>
-    <div class="value">{format_duration(latency.get("mean", 0))}</div>
-  </div>
-  <div class="indicator">
-    <div class="label">p95 Latency</div>
-    <div class="value {"yellow" if percentiles.get("p95", 0) > 1 else ""}">{
-        format_duration(percentiles.get("p95", 0))
-    }</div>
-  </div>
-  <div class="indicator">
-    <div class="label">p99 Latency</div>
-    <div class="value {"red" if percentiles.get("p99", 0) > 2 else ""}">{
-        format_duration(percentiles.get("p99", 0))
-    }</div>
-  </div>
-  <div class="indicator">
-    <div class="label">Transfer</div>
-    <div class="value">{format_bytes(results.get("transfer_per_sec_bytes", 0))}/s</div>
-  </div>
-</div>
-
-<!-- Charts -->
-<div class="charts">
-  <!-- Response Time Distribution -->
-  <div class="chart-card">
-    <h3>Response Time Distribution</h3>
-    <canvas id="histChart"></canvas>
-  </div>
-  <!-- Percentiles -->
-  <div class="chart-card">
-    <h3>Response Time Percentiles</h3>
-    <canvas id="pctChart"></canvas>
-  </div>
-  <!-- RPS Timeline -->
-  <div class="chart-card full">
-    <h3>Requests per Second Over Time</h3>
-    <canvas id="rpsChart" height="80"></canvas>
-  </div>
-  <!-- Status Codes -->
-  <div class="chart-card">
-    <h3>Status Code Distribution</h3>
-    <canvas id="scChart"></canvas>
-  </div>
-  <!-- Latency Breakdown -->
-  <div class="chart-card" id="bdCard" style="{
-        "display:block" if has_breakdown else "display:none"
-    }">
-    <h3>Latency Breakdown (avg)</h3>
-    <canvas id="bdChart"></canvas>
-  </div>
-</div>
-
-<!-- Error Details -->
-{
-        ""
-        if not error_types
-        else '''
-<div class="chart-card full" style="margin-bottom:28px">
-  <h3>Error Details</h3>
-  <table class="errors-table">
-    <tr><th>Error</th><th>Count</th></tr>
-    '''
-        + "".join(
+    # Pre-render error table HTML
+    error_table_html = ""
+    if error_types:
+        rows = "".join(
             f"<tr><td>{_html_escape(e)}</td><td>{c:,}</td></tr>"
             for e, c in sorted(error_types.items(), key=lambda x: -x[1])
         )
-        + '''
-  </table>
-</div>
-'''
+        error_table_html = (
+            '<div class="chart-card full" style="margin-bottom:28px">\n'
+            "  <h3>Error Details</h3>\n"
+            '  <table class="errors-table">\n'
+            "    <tr><th>Error</th><th>Count</th></tr>\n"
+            f"    {rows}\n"
+            "  </table>\n"
+            "</div>"
+        )
+
+    # Build template context
+    context = {
+        "title": _html_escape(url),
+        "method": _html_escape(method),
+        "url_display": _html_escape(url),
+        "mode": mode,
+        "connections": connections,
+        "timestamp": timestamp,
+        "total_requests": f"{stats.total_requests:,}",
+        "duration_display": f"{duration:.1f}",
+        "rps_display": f"{results.get('requests_per_sec', 0):,.1f}",
+        "errors_display": f"{stats.errors:,} ({error_rate:.1f}%)",
+        "errors_class": errors_class,
+        "mean_latency": format_duration(latency.get("mean", 0)),
+        "p95_latency": format_duration(percentiles.get("p95", 0)),
+        "p95_class": p95_class,
+        "p99_latency": format_duration(percentiles.get("p99", 0)),
+        "p99_class": p99_class,
+        "transfer_rate": format_bytes(results.get("transfer_per_sec_bytes", 0)),
+        "hist_labels_json": _json.dumps(hist_labels),
+        "hist_counts_json": _json.dumps(hist_counts),
+        "hist_colors_json": _json.dumps(hist_colors),
+        "pct_labels_json": _json.dumps(pct_labels),
+        "pct_values_json": _json.dumps(pct_values),
+        "rps_labels_json": _json.dumps(rps_labels),
+        "rps_values_json": _json.dumps(rps_values),
+        "sc_labels_json": _json.dumps(sc_labels),
+        "sc_values_json": _json.dumps(sc_values),
+        "sc_colors_json": _json.dumps(sc_colors),
+        "bd_labels_json": _json.dumps(bd_labels),
+        "bd_values_json": _json.dumps(bd_values),
+        "has_breakdown_json": _json.dumps(has_breakdown),
+        "bd_card_display": bd_card_display,
+        "bd_bar_colors_json": _json.dumps(
+            [COLOR_BLUE, COLOR_GREEN, COLOR_PURPLE, COLOR_ORANGE, COLOR_CYAN]
+        ),
+        "error_table_html": error_table_html,
     }
 
-</div>
-<div class="footer">
-  Generated by <a href="https://github.com/kurok/pywrkr">pywrkr</a>
-  &mdash; Python HTTP benchmarking tool
-</div>
-
-<script>
-const chartDefaults = {{
-  color: '#999',
-  borderColor: 'rgba(255,255,255,0.1)',
-  font: {{ family: "'Segoe UI', system-ui, sans-serif" }}
-}};
-Chart.defaults.color = chartDefaults.color;
-Chart.defaults.borderColor = chartDefaults.borderColor;
-
-// Response Time Distribution
-new Chart(document.getElementById('histChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {_json.dumps(hist_labels)},
-    datasets: [{{
-      label: 'Requests',
-      data: {_json.dumps(hist_counts)},
-      backgroundColor: {_json.dumps(hist_colors)},
-      borderRadius: 3,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ display: false }},
-      tooltip: {{ callbacks: {{ title: (items) => items[0].label + ' ms' }} }}
-    }},
-    scales: {{
-      x: {{ title: {{ display: true, text: 'Response Time (ms)' }},
-            ticks: {{ maxRotation: 45, autoSkip: true, maxTicksLimit: 15 }} }},
-      y: {{ title: {{ display: true, text: 'Count' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// Percentile Chart
-new Chart(document.getElementById('pctChart'), {{
-  type: 'line',
-  data: {{
-    labels: {_json.dumps(pct_labels)},
-    datasets: [{{
-      label: 'Latency (ms)',
-      data: {_json.dumps(pct_values)},
-      borderColor: '#e94560',
-      backgroundColor: 'rgba(233,69,96,0.15)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 5,
-      pointBackgroundColor: '#e94560',
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      y: {{ title: {{ display: true, text: 'Response Time (ms)' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// RPS Timeline
-new Chart(document.getElementById('rpsChart'), {{
-  type: 'line',
-  data: {{
-    labels: {_json.dumps(rps_labels)},
-    datasets: [{{
-      label: 'Req/s',
-      data: {_json.dumps(rps_values)},
-      borderColor: '#4caf50',
-      backgroundColor: 'rgba(76,175,80,0.12)',
-      fill: true,
-      tension: 0.2,
-      pointRadius: 2,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      x: {{ title: {{ display: true, text: 'Time' }},
-            ticks: {{ autoSkip: true, maxTicksLimit: 20 }} }},
-      y: {{ title: {{ display: true, text: 'Requests/sec' }}, beginAtZero: true }}
-    }}
-  }}
-}});
-
-// Status Codes
-new Chart(document.getElementById('scChart'), {{
-  type: 'doughnut',
-  data: {{
-    labels: {_json.dumps(sc_labels)},
-    datasets: [{{
-      data: {_json.dumps(sc_values)},
-      backgroundColor: {_json.dumps(sc_colors)},
-      borderWidth: 0,
-    }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ position: 'right', labels: {{ padding: 16 }} }}
-    }}
-  }}
-}});
-
-// Latency Breakdown
-if ({_json.dumps(has_breakdown)}) {{
-  new Chart(document.getElementById('bdChart'), {{
-    type: 'bar',
-    data: {{
-      labels: {_json.dumps(bd_labels)},
-      datasets: [{{
-        label: 'Avg (ms)',
-        data: {_json.dumps(bd_values)},
-        backgroundColor: [
-          'rgba(33,150,243,0.8)', 'rgba(76,175,80,0.8)', 'rgba(156,39,176,0.8)',
-          'rgba(255,152,0,0.8)', 'rgba(0,188,212,0.8)'
-        ],
-        borderRadius: 4,
-      }}]
-    }},
-    options: {{
-      indexAxis: 'y',
-      responsive: true,
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ title: {{ display: true, text: 'Time (ms)' }}, beginAtZero: true }}
-      }}
-    }}
-  }});
-}}
-</script>
-</body>
-</html>"""
-    return html
+    template = _load_template("gatling_report.html")
+    return template.safe_substitute(context)
 
 
 def _html_escape(s: str) -> str:
@@ -803,6 +612,116 @@ def write_html_report(path: str, html: str) -> None:
     """Write HTML report to a file."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
+
+
+# ---------------------------------------------------------------------------
+# Shared export metric definitions
+# ---------------------------------------------------------------------------
+
+
+class _MetricSpec(NamedTuple):
+    """Specification for an exportable benchmark metric."""
+
+    name_suffix: str  # used for Prometheus: "pywrkr_" + name_suffix
+    otel_name: str  # explicit OTel metric name
+    results_key: str
+    nested_key: str | None
+    multiplier: float
+    metric_type: str  # "counter" or "gauge"
+    description: str
+
+
+_EXPORT_METRICS: list[_MetricSpec] = [
+    _MetricSpec(
+        "requests_total",
+        "pywrkr.requests.total",
+        "total_requests",
+        None,
+        1,
+        "counter",
+        "Total requests",
+    ),
+    _MetricSpec(
+        "errors_total", "pywrkr.errors.total", "total_errors", None, 1, "counter", "Total errors"
+    ),
+    _MetricSpec(
+        "requests_per_sec",
+        "pywrkr.requests_per_sec",
+        "requests_per_sec",
+        None,
+        1,
+        "gauge",
+        "Requests per second",
+    ),
+    _MetricSpec(
+        "transfer_bytes_per_sec",
+        "pywrkr.transfer_bytes_per_sec",
+        "transfer_per_sec_bytes",
+        None,
+        1,
+        "gauge",
+        "Transfer bytes per second",
+    ),
+    _MetricSpec(
+        "duration_sec",
+        "pywrkr.duration_sec",
+        "duration_sec",
+        None,
+        1,
+        "gauge",
+        "Benchmark duration in seconds",
+    ),
+    _MetricSpec(
+        "latency_p50_ms",
+        "pywrkr.latency.p50",
+        "percentiles",
+        "p50",
+        1000,
+        "gauge",
+        "p50 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_p95_ms",
+        "pywrkr.latency.p95",
+        "percentiles",
+        "p95",
+        1000,
+        "gauge",
+        "p95 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_p99_ms",
+        "pywrkr.latency.p99",
+        "percentiles",
+        "p99",
+        1000,
+        "gauge",
+        "p99 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_mean_ms",
+        "pywrkr.latency.mean",
+        "latency",
+        "mean",
+        1000,
+        "gauge",
+        "Mean latency in ms",
+    ),
+    _MetricSpec(
+        "latency_max_ms", "pywrkr.latency.max", "latency", "max", 1000, "gauge", "Max latency in ms"
+    ),
+]
+
+
+def _resolve_metric_value(
+    results: dict, results_key: str, nested_key: str | None, multiplier: float
+) -> float:
+    """Resolve a metric value from the results dict."""
+    if nested_key is not None:
+        val = results.get(results_key, {}).get(nested_key, 0)
+    else:
+        val = results.get(results_key, 0)
+    return val * multiplier
 
 
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
@@ -821,34 +740,19 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
         reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         meter = provider.get_meter("pywrkr")
-
         attributes = dict(tags)
 
-        # Counters
-        req_counter = meter.create_counter("pywrkr.requests.total", description="Total requests")
-        req_counter.add(results.get("total_requests", 0), attributes=attributes)
+        for spec in _EXPORT_METRICS:
+            value = _resolve_metric_value(
+                results, spec.results_key, spec.nested_key, spec.multiplier
+            )
+            if spec.metric_type == "counter":
+                counter = meter.create_counter(spec.otel_name, description=spec.description)
+                counter.add(value, attributes=attributes)
+            else:
+                gauge = meter.create_up_down_counter(spec.otel_name, description=spec.description)
+                gauge.add(value, attributes=attributes)
 
-        err_counter = meter.create_counter("pywrkr.errors.total", description="Total errors")
-        err_counter.add(results.get("total_errors", 0), attributes=attributes)
-
-        # Gauges via UpDownCounter (set once)
-        def _gauge(name, value, desc=""):
-            g = meter.create_up_down_counter(name, description=desc)
-            g.add(value, attributes=attributes)
-
-        _gauge("pywrkr.requests_per_sec", results.get("requests_per_sec", 0))
-        _gauge("pywrkr.transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0))
-        _gauge("pywrkr.duration_sec", results.get("duration_sec", 0))
-
-        percentiles = results.get("percentiles", {})
-        latency = results.get("latency", {})
-        _gauge("pywrkr.latency.p50", percentiles.get("p50", 0) * 1000)
-        _gauge("pywrkr.latency.p95", percentiles.get("p95", 0) * 1000)
-        _gauge("pywrkr.latency.p99", percentiles.get("p99", 0) * 1000)
-        _gauge("pywrkr.latency.mean", latency.get("mean", 0) * 1000)
-        _gauge("pywrkr.latency.max", latency.get("max", 0) * 1000)
-
-        # Force flush and shutdown
         provider.force_flush()
         provider.shutdown()
     except Exception as e:
@@ -861,50 +765,18 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
     import urllib.request
 
     try:
-        # Build Prometheus text format
         lines: list[str] = []
         labels_parts = [f'{k}="{v}"' for k, v in sorted(tags.items())]
         labels_str = "{" + ",".join(labels_parts) + "}" if labels_parts else ""
 
-        def _add(name: str, value: float, mtype: str = "gauge", help_text: str = ""):
-            lines.append(f"# HELP {name} {help_text}")
-            lines.append(f"# TYPE {name} {mtype}")
-            lines.append(f"{name}{labels_str} {value}")
-
-        _add("pywrkr_requests_total", results.get("total_requests", 0), "counter", "Total requests")
-        _add("pywrkr_errors_total", results.get("total_errors", 0), "counter", "Total errors")
-        _add(
-            "pywrkr_requests_per_sec",
-            results.get("requests_per_sec", 0),
-            "gauge",
-            "Requests per second",
-        )
-        _add(
-            "pywrkr_transfer_bytes_per_sec",
-            results.get("transfer_per_sec_bytes", 0),
-            "gauge",
-            "Transfer bytes per second",
-        )
-        _add(
-            "pywrkr_duration_sec",
-            results.get("duration_sec", 0),
-            "gauge",
-            "Benchmark duration in seconds",
-        )
-
-        percentiles = results.get("percentiles", {})
-        latency = results.get("latency", {})
-        _add(
-            "pywrkr_latency_p50_ms", percentiles.get("p50", 0) * 1000, "gauge", "p50 latency in ms"
-        )
-        _add(
-            "pywrkr_latency_p95_ms", percentiles.get("p95", 0) * 1000, "gauge", "p95 latency in ms"
-        )
-        _add(
-            "pywrkr_latency_p99_ms", percentiles.get("p99", 0) * 1000, "gauge", "p99 latency in ms"
-        )
-        _add("pywrkr_latency_mean_ms", latency.get("mean", 0) * 1000, "gauge", "Mean latency in ms")
-        _add("pywrkr_latency_max_ms", latency.get("max", 0) * 1000, "gauge", "Max latency in ms")
+        for spec in _EXPORT_METRICS:
+            value = _resolve_metric_value(
+                results, spec.results_key, spec.nested_key, spec.multiplier
+            )
+            prom_name = "pywrkr_" + spec.name_suffix
+            lines.append(f"# HELP {prom_name} {spec.description}")
+            lines.append(f"# TYPE {prom_name} {spec.metric_type}")
+            lines.append(f"{prom_name}{labels_str} {value}")
 
         body = "\n".join(lines) + "\n"
         url = endpoint.rstrip("/") + "/metrics/job/pywrkr"
@@ -926,11 +798,12 @@ def print_results(
     start_time: float,
     config: BenchmarkConfig,
     rate_limiter: RateLimiter | None = None,
+    file: TextIO | None = None,
 ) -> None:
     """Print full benchmark results to stdout."""
     from pywrkr.workers import aggregate_breakdowns
 
-    out = sys.stdout
+    out = file if file is not None else sys.stdout
 
     rps = stats.total_requests / duration if duration > 0 else 0
     transfer_rate = stats.total_bytes / duration if duration > 0 else 0
@@ -1161,9 +1034,9 @@ def print_autofind_summary(steps: list[StepResult], max_users: int | None) -> No
 # ---------------------------------------------------------------------------
 
 
-def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F821
+def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO | None = None) -> None:  # noqa: F821
     """Print a comparison table across all URLs."""
-    out = sys.stdout
+    out = file if file is not None else sys.stdout
     print(f"\n{'=' * 90}", file=out)
     print("  MULTI-URL COMPARISON SUMMARY", file=out)
     print(f"{'=' * 90}", file=out)
@@ -1184,11 +1057,10 @@ def print_multi_url_summary(results: "list[MultiUrlResult]") -> None:  # noqa: F
         # Compute percentiles
         p50 = p95 = p99 = 0.0
         if r.stats.latencies:
-            sorted_lat = sorted(r.stats.latencies)
-            n = len(sorted_lat)
-            p50 = sorted_lat[min(int(math.ceil(50 / 100 * n)) - 1, n - 1)]
-            p95 = sorted_lat[min(int(math.ceil(95 / 100 * n)) - 1, n - 1)]
-            p99 = sorted_lat[min(int(math.ceil(99 / 100 * n)) - 1, n - 1)]
+            pct_map = dict(compute_percentiles(r.stats.latencies))
+            p50 = pct_map.get(50, 0.0)
+            p95 = pct_map.get(95, 0.0)
+            p99 = pct_map.get(99, 0.0)
 
         err_pct = (
             (r.stats.errors / r.stats.total_requests * 100) if r.stats.total_requests > 0 else 0
