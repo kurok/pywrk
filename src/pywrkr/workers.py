@@ -14,7 +14,6 @@ import statistics
 import sys
 import time
 import uuid
-from typing import TypedDict
 from urllib.parse import urlparse
 
 import aiohttp
@@ -62,21 +61,6 @@ _PROGRESS_EMPTY_CHAR = "\u2591"
 _MAX_STEP_NAMES = 500
 
 
-# ---------------------------------------------------------------------------
-# TypedDict definitions for stricter dict typing
-# ---------------------------------------------------------------------------
-
-
-class RequestCounterDict(TypedDict):
-    """Typed dict for the shared request counter."""
-
-    remaining: int
-
-
-class ActiveUsersDict(TypedDict):
-    """Typed dict for the shared active users counter."""
-
-    count: int
 
 
 # ---------------------------------------------------------------------------
