@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from pywrkr.config import BenchmarkConfig, Threshold, WorkerStats
+from pywrkr.multi_url import MultiUrlResult
 from pywrkr.reporting import (
     build_results_dict,
     compute_percentiles,
@@ -15,6 +16,7 @@ from pywrkr.reporting import (
     format_duration,
     parse_threshold,
     print_latency_histogram,
+    print_multi_url_summary,
     print_percentiles,
     print_threshold_results,
     write_csv_output,
@@ -279,6 +281,36 @@ class TestBuildResultsDict(unittest.TestCase):
         self.assertIn("requests_per_sec", result)
         self.assertIn("latency", result)
         self.assertIn("percentiles", result)
+
+
+class TestPrintMultiUrlSummary(unittest.TestCase):
+    """Tests for print_multi_url_summary."""
+
+    def test_output_contains_url_and_stats(self):
+        stats = WorkerStats()
+        stats.total_requests = 500
+        stats.total_bytes = 25000
+        stats.errors = 2
+        # Latencies from 50ms to 149ms
+        stats.latencies.extend([0.05 + i * 0.001 for i in range(100)])
+        stats.status_codes[200] = 498
+        stats.status_codes[500] = 2
+
+        result = MultiUrlResult(
+            url="http://localhost:8080/api",
+            method="GET",
+            stats=stats,
+            duration=10.0,
+            exit_code=0,
+        )
+        buf = io.StringIO()
+        print_multi_url_summary([result], file=buf)
+        output = buf.getvalue()
+        self.assertIn("MULTI-URL COMPARISON", output)
+        self.assertIn("localhost:8080/api", output)
+        self.assertIn("500", output)  # total requests
+        # Verify percentile durations appear (formatted as ms)
+        self.assertIn("ms", output)
 
 
 if __name__ == "__main__":

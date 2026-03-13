@@ -1206,11 +1206,10 @@ def print_multi_url_summary(results: "list[MultiUrlResult]", file: TextIO = sys.
         # Compute percentiles
         p50 = p95 = p99 = 0.0
         if r.stats.latencies:
-            sorted_lat = sorted(r.stats.latencies)
-            n = len(sorted_lat)
-            p50 = sorted_lat[min(int(math.ceil(50 / 100 * n)) - 1, n - 1)]
-            p95 = sorted_lat[min(int(math.ceil(95 / 100 * n)) - 1, n - 1)]
-            p99 = sorted_lat[min(int(math.ceil(99 / 100 * n)) - 1, n - 1)]
+            pct_map = dict(compute_percentiles(r.stats.latencies))
+            p50 = pct_map.get(50, 0.0)
+            p95 = pct_map.get(95, 0.0)
+            p99 = pct_map.get(99, 0.0)
 
         err_pct = (
             (r.stats.errors / r.stats.total_requests * 100) if r.stats.total_requests > 0 else 0
