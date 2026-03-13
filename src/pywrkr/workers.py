@@ -61,8 +61,6 @@ _PROGRESS_EMPTY_CHAR = "\u2591"
 _MAX_STEP_NAMES = 500
 
 
-
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -99,9 +97,7 @@ def _normalize_config_duration(config: BenchmarkConfig) -> float | None:
     return None
 
 
-def _record_step_latency(
-    stats: WorkerStats, step_name: str, latency: float
-) -> None:
+def _record_step_latency(stats: WorkerStats, step_name: str, latency: float) -> None:
     """Record a latency sample for a named step, with bounded keys.
 
     If the number of unique step names exceeds ``_MAX_STEP_NAMES``, new
@@ -169,9 +165,7 @@ class LiveDashboard:
         duration = _normalize_config_duration(self.config)
         if duration is not None:
             bar, pct = _build_progress_bar(elapsed, duration)
-            progress_str = (
-                f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  {bar} {pct:.1f}%"
-            )
+            progress_str = f"Elapsed: {elapsed:.1f}s / {duration:.1f}s  {bar} {pct:.1f}%"
         elif self.config.num_requests:
             total_n = self.config.num_requests
             bar, pct = _build_progress_bar(total_req, total_n)
@@ -298,8 +292,7 @@ def _merge_all_stats(all_stats: list[WorkerStats]) -> WorkerStats:
         merged.breakdowns.extend(ws.breakdowns)
 
     logger.debug(
-        "Merged stats from %d workers: %d total requests, "
-        "%d latency samples, %d breakdown samples",
+        "Merged stats from %d workers: %d total requests, %d latency samples, %d breakdown samples",
         len(all_stats),
         merged.total_requests,
         len(merged.latencies),
@@ -592,8 +585,12 @@ async def _execute_request(
             if config.verbosity >= 4:
                 logger.debug(
                     "%s %s %s -> %s (%dB, %s)",
-                    _V4_TAG, method, url, resp.status,
-                    len(data), format_duration(latency),
+                    _V4_TAG,
+                    method,
+                    url,
+                    resp.status,
+                    len(data),
+                    format_duration(latency),
                 )
             elif config.verbosity >= 3:
                 logger.debug("%s %s", _V3_TAG, resp.status)
@@ -738,7 +735,8 @@ async def worker(
 
     logger.debug(
         "Worker finished: %d requests, %d errors",
-        stats.total_requests, stats.errors,
+        stats.total_requests,
+        stats.errors,
     )
 
 
@@ -802,7 +800,9 @@ async def user_worker(
         active_users.count -= 1
         logger.debug(
             "User %d finished: %d requests, %d errors",
-            user_id, stats.total_requests, stats.errors,
+            user_id,
+            stats.total_requests,
+            stats.errors,
         )
 
 
@@ -901,7 +901,9 @@ async def scenario_worker(
         active_users.count -= 1
         logger.debug(
             "Scenario user %d finished: %d requests, %d errors",
-            user_id, stats.total_requests, stats.errors,
+            user_id,
+            stats.total_requests,
+            stats.errors,
         )
 
 
@@ -1159,7 +1161,9 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
 
     logger.debug(
         "Worker distribution: %d groups, sizes=%s, total=%d workers",
-        len(group_sizes), group_sizes, sum(group_sizes),
+        len(group_sizes),
+        group_sizes,
+        sum(group_sizes),
     )
 
     progress_task = _create_progress_task(
@@ -1257,7 +1261,8 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     )
     logger.debug(
         "User simulation: %d users, pool_limit=%d",
-        num_users, pool_limit,
+        num_users,
+        pool_limit,
     )
 
     all_stats: list[WorkerStats] = []
