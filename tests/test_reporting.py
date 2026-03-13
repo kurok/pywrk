@@ -9,6 +9,8 @@ import unittest
 from pywrkr.config import BenchmarkConfig, Threshold, WorkerStats
 from pywrkr.multi_url import MultiUrlResult
 from pywrkr.reporting import (
+    _EXPORT_METRICS,
+    _resolve_metric_value,
     build_results_dict,
     compute_percentiles,
     evaluate_thresholds,
@@ -311,6 +313,36 @@ class TestPrintMultiUrlSummary(unittest.TestCase):
         self.assertIn("500", output)  # total requests
         # Verify percentile durations appear (formatted as ms)
         self.assertIn("ms", output)
+
+
+class TestExportMetrics(unittest.TestCase):
+    """Tests for shared export metric definitions."""
+
+    def test_resolve_flat_metric(self):
+        results = {"total_requests": 1000, "total_errors": 5}
+        val = _resolve_metric_value(results, "total_requests", None, 1)
+        self.assertEqual(val, 1000)
+
+    def test_resolve_nested_metric(self):
+        results = {"percentiles": {"p50": 0.05, "p95": 0.1}}
+        val = _resolve_metric_value(results, "percentiles", "p50", 1000)
+        self.assertAlmostEqual(val, 50.0)
+
+    def test_resolve_missing_returns_zero(self):
+        results = {}
+        val = _resolve_metric_value(results, "total_requests", None, 1)
+        self.assertEqual(val, 0)
+
+    def test_export_metrics_list_not_empty(self):
+        self.assertGreater(len(_EXPORT_METRICS), 0)
+
+    def test_all_metrics_have_valid_type(self):
+        for spec in _EXPORT_METRICS:
+            self.assertIn(spec.metric_type, ("counter", "gauge"))
+
+    def test_otel_names_are_explicit(self):
+        for spec in _EXPORT_METRICS:
+            self.assertTrue(spec.otel_name.startswith("pywrkr."))
 
 
 if __name__ == "__main__":

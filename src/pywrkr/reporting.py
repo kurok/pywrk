@@ -7,7 +7,7 @@ import re
 import statistics
 import sys
 from collections import defaultdict
-from typing import TextIO
+from typing import NamedTuple, TextIO
 
 # Optional third-party imports
 try:
@@ -826,6 +826,116 @@ def write_html_report(path: str, html: str) -> None:
         f.write(html)
 
 
+# ---------------------------------------------------------------------------
+# Shared export metric definitions
+# ---------------------------------------------------------------------------
+
+
+class _MetricSpec(NamedTuple):
+    """Specification for an exportable benchmark metric."""
+
+    name_suffix: str  # used for Prometheus: "pywrkr_" + name_suffix
+    otel_name: str  # explicit OTel metric name
+    results_key: str
+    nested_key: str | None
+    multiplier: float
+    metric_type: str  # "counter" or "gauge"
+    description: str
+
+
+_EXPORT_METRICS: list[_MetricSpec] = [
+    _MetricSpec(
+        "requests_total",
+        "pywrkr.requests.total",
+        "total_requests",
+        None,
+        1,
+        "counter",
+        "Total requests",
+    ),
+    _MetricSpec(
+        "errors_total", "pywrkr.errors.total", "total_errors", None, 1, "counter", "Total errors"
+    ),
+    _MetricSpec(
+        "requests_per_sec",
+        "pywrkr.requests_per_sec",
+        "requests_per_sec",
+        None,
+        1,
+        "gauge",
+        "Requests per second",
+    ),
+    _MetricSpec(
+        "transfer_bytes_per_sec",
+        "pywrkr.transfer_bytes_per_sec",
+        "transfer_per_sec_bytes",
+        None,
+        1,
+        "gauge",
+        "Transfer bytes per second",
+    ),
+    _MetricSpec(
+        "duration_sec",
+        "pywrkr.duration_sec",
+        "duration_sec",
+        None,
+        1,
+        "gauge",
+        "Benchmark duration in seconds",
+    ),
+    _MetricSpec(
+        "latency_p50_ms",
+        "pywrkr.latency.p50",
+        "percentiles",
+        "p50",
+        1000,
+        "gauge",
+        "p50 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_p95_ms",
+        "pywrkr.latency.p95",
+        "percentiles",
+        "p95",
+        1000,
+        "gauge",
+        "p95 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_p99_ms",
+        "pywrkr.latency.p99",
+        "percentiles",
+        "p99",
+        1000,
+        "gauge",
+        "p99 latency in ms",
+    ),
+    _MetricSpec(
+        "latency_mean_ms",
+        "pywrkr.latency.mean",
+        "latency",
+        "mean",
+        1000,
+        "gauge",
+        "Mean latency in ms",
+    ),
+    _MetricSpec(
+        "latency_max_ms", "pywrkr.latency.max", "latency", "max", 1000, "gauge", "Max latency in ms"
+    ),
+]
+
+
+def _resolve_metric_value(
+    results: dict, results_key: str, nested_key: str | None, multiplier: float
+) -> float:
+    """Resolve a metric value from the results dict."""
+    if nested_key is not None:
+        val = results.get(results_key, {}).get(nested_key, 0)
+    else:
+        val = results.get(results_key, 0)
+    return val * multiplier
+
+
 def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
     """Export benchmark metrics to an OpenTelemetry collector via OTLP/HTTP."""
     if not OTEL_AVAILABLE:
@@ -842,34 +952,19 @@ def export_to_otel(results: dict, endpoint: str, tags: dict[str, str]) -> None:
         reader = PeriodicExportingMetricReader(exporter, export_interval_millis=1000)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         meter = provider.get_meter("pywrkr")
-
         attributes = dict(tags)
 
-        # Counters
-        req_counter = meter.create_counter("pywrkr.requests.total", description="Total requests")
-        req_counter.add(results.get("total_requests", 0), attributes=attributes)
+        for spec in _EXPORT_METRICS:
+            value = _resolve_metric_value(
+                results, spec.results_key, spec.nested_key, spec.multiplier
+            )
+            if spec.metric_type == "counter":
+                counter = meter.create_counter(spec.otel_name, description=spec.description)
+                counter.add(value, attributes=attributes)
+            else:
+                gauge = meter.create_up_down_counter(spec.otel_name, description=spec.description)
+                gauge.add(value, attributes=attributes)
 
-        err_counter = meter.create_counter("pywrkr.errors.total", description="Total errors")
-        err_counter.add(results.get("total_errors", 0), attributes=attributes)
-
-        # Gauges via UpDownCounter (set once)
-        def _gauge(name, value, desc=""):
-            g = meter.create_up_down_counter(name, description=desc)
-            g.add(value, attributes=attributes)
-
-        _gauge("pywrkr.requests_per_sec", results.get("requests_per_sec", 0))
-        _gauge("pywrkr.transfer_bytes_per_sec", results.get("transfer_per_sec_bytes", 0))
-        _gauge("pywrkr.duration_sec", results.get("duration_sec", 0))
-
-        percentiles = results.get("percentiles", {})
-        latency = results.get("latency", {})
-        _gauge("pywrkr.latency.p50", percentiles.get("p50", 0) * 1000)
-        _gauge("pywrkr.latency.p95", percentiles.get("p95", 0) * 1000)
-        _gauge("pywrkr.latency.p99", percentiles.get("p99", 0) * 1000)
-        _gauge("pywrkr.latency.mean", latency.get("mean", 0) * 1000)
-        _gauge("pywrkr.latency.max", latency.get("max", 0) * 1000)
-
-        # Force flush and shutdown
         provider.force_flush()
         provider.shutdown()
     except Exception as e:
@@ -882,50 +977,18 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
     import urllib.request
 
     try:
-        # Build Prometheus text format
         lines: list[str] = []
         labels_parts = [f'{k}="{v}"' for k, v in sorted(tags.items())]
         labels_str = "{" + ",".join(labels_parts) + "}" if labels_parts else ""
 
-        def _add(name: str, value: float, mtype: str = "gauge", help_text: str = ""):
-            lines.append(f"# HELP {name} {help_text}")
-            lines.append(f"# TYPE {name} {mtype}")
-            lines.append(f"{name}{labels_str} {value}")
-
-        _add("pywrkr_requests_total", results.get("total_requests", 0), "counter", "Total requests")
-        _add("pywrkr_errors_total", results.get("total_errors", 0), "counter", "Total errors")
-        _add(
-            "pywrkr_requests_per_sec",
-            results.get("requests_per_sec", 0),
-            "gauge",
-            "Requests per second",
-        )
-        _add(
-            "pywrkr_transfer_bytes_per_sec",
-            results.get("transfer_per_sec_bytes", 0),
-            "gauge",
-            "Transfer bytes per second",
-        )
-        _add(
-            "pywrkr_duration_sec",
-            results.get("duration_sec", 0),
-            "gauge",
-            "Benchmark duration in seconds",
-        )
-
-        percentiles = results.get("percentiles", {})
-        latency = results.get("latency", {})
-        _add(
-            "pywrkr_latency_p50_ms", percentiles.get("p50", 0) * 1000, "gauge", "p50 latency in ms"
-        )
-        _add(
-            "pywrkr_latency_p95_ms", percentiles.get("p95", 0) * 1000, "gauge", "p95 latency in ms"
-        )
-        _add(
-            "pywrkr_latency_p99_ms", percentiles.get("p99", 0) * 1000, "gauge", "p99 latency in ms"
-        )
-        _add("pywrkr_latency_mean_ms", latency.get("mean", 0) * 1000, "gauge", "Mean latency in ms")
-        _add("pywrkr_latency_max_ms", latency.get("max", 0) * 1000, "gauge", "Max latency in ms")
+        for spec in _EXPORT_METRICS:
+            value = _resolve_metric_value(
+                results, spec.results_key, spec.nested_key, spec.multiplier
+            )
+            prom_name = "pywrkr_" + spec.name_suffix
+            lines.append(f"# HELP {prom_name} {spec.description}")
+            lines.append(f"# TYPE {prom_name} {spec.metric_type}")
+            lines.append(f"{prom_name}{labels_str} {value}")
 
         body = "\n".join(lines) + "\n"
         url = endpoint.rstrip("/") + "/metrics/job/pywrkr"
