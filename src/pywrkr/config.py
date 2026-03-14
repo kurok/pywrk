@@ -53,15 +53,29 @@ class SSLConfig:
         """Create SSLConfig from environment variables.
 
         Environment variables:
-            PYWRKR_SSL_VERIFY: Set to '1' or 'true' to enable SSL verification.
+            PYWRKR_SSL_VERIFY: Set to '1', 'true', or 'yes' to enable SSL
+                verification.  Any other non-empty value triggers a warning.
             PYWRKR_CA_BUNDLE: Path to a custom CA bundle file.
         """
-        import os
+        _TRUTHY = {"1", "true", "yes"}
+        _FALSY = {"0", "false", "no", ""}
 
         verify_env = os.environ.get("PYWRKR_SSL_VERIFY", "").lower()
-        verify = verify_env in ("1", "true", "yes")
+        verify = verify_env in _TRUTHY
+        if verify_env and verify_env not in _TRUTHY and verify_env not in _FALSY:
+            logger.warning(
+                "Unrecognised PYWRKR_SSL_VERIFY value %r — treating as disabled. "
+                "Use one of: 1, true, yes, 0, false, no.",
+                verify_env,
+            )
+
         ca_bundle = os.environ.get("PYWRKR_CA_BUNDLE") or None
-        return cls(verify=verify, ca_bundle=ca_bundle)
+        if ca_bundle and not os.path.isfile(ca_bundle):
+            logger.warning("PYWRKR_CA_BUNDLE path does not exist: %s", ca_bundle)
+
+        config = cls(verify=verify, ca_bundle=ca_bundle)
+        logger.debug("SSL config from environment: verify=%s, ca_bundle=%s", verify, ca_bundle)
+        return config
 
 
 @dataclass
@@ -357,6 +371,7 @@ class Scenario:
 
 def load_scenario(path: str) -> Scenario:
     """Load a scenario from a JSON or YAML file."""
+    logger.debug("Loading scenario from %s", path)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Scenario file not found: {path}")
 
@@ -421,8 +436,15 @@ def load_scenario(path: str) -> Scenario:
             )
         )
 
-    return Scenario(
+    scenario = Scenario(
         name=data.get("name", "Unnamed Scenario"),
         think_time=data.get("think_time", 0.0),
         steps=steps,
     )
+    logger.info(
+        "Loaded scenario %r with %d steps from %s",
+        scenario.name,
+        len(steps),
+        path,
+    )
+    return scenario
