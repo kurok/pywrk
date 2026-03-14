@@ -77,6 +77,33 @@ class TestSSLConfig(unittest.TestCase):
             cfg = SSLConfig.from_env()
         self.assertEqual(cfg.ca_bundle, "/etc/ssl/certs.pem")
 
+    def test_from_env_unrecognised_verify_warns(self):
+        """Unrecognised PYWRKR_SSL_VERIFY value logs a warning."""
+        with patch.dict(os.environ, {"PYWRKR_SSL_VERIFY": "maybe"}, clear=True):
+            with self.assertLogs("pywrkr.config", level="WARNING") as cm:
+                cfg = SSLConfig.from_env()
+        self.assertFalse(cfg.verify)
+        self.assertTrue(any("Unrecognised" in msg for msg in cm.output))
+
+    def test_from_env_ca_bundle_missing_warns(self):
+        """Non-existent PYWRKR_CA_BUNDLE path logs a warning."""
+        with patch.dict(
+            os.environ,
+            {"PYWRKR_CA_BUNDLE": "/nonexistent/ca-bundle.pem"},
+            clear=True,
+        ):
+            with self.assertLogs("pywrkr.config", level="WARNING") as cm:
+                cfg = SSLConfig.from_env()
+        self.assertEqual(cfg.ca_bundle, "/nonexistent/ca-bundle.pem")
+        self.assertTrue(any("does not exist" in msg for msg in cm.output))
+
+    def test_from_env_explicit_false_no_warning(self):
+        """Explicit falsy values (0, false, no) do not trigger a warning."""
+        for value in ("0", "false", "no"):
+            with patch.dict(os.environ, {"PYWRKR_SSL_VERIFY": value}, clear=True):
+                cfg = SSLConfig.from_env()
+            self.assertFalse(cfg.verify)
+
     def test_benchmark_config_has_ssl_config(self):
         """BenchmarkConfig should have ssl_config with default SSLConfig."""
         config = BenchmarkConfig(url="http://example.com")
