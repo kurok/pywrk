@@ -331,9 +331,25 @@ class TestProtocol(unittest.TestCase):
 class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
     """Tests for HMAC-SHA256 challenge-response authentication."""
 
-    async def _open_raw_connection(self, port: int):
-        """Return a raw (reader, writer) pair to the given port."""
-        return await asyncio.open_connection("127.0.0.1", port)
+    async def _open_raw_connection(self, port: int, timeout: float = 10.0):
+        """Return a raw (reader, writer) pair, retrying until the master accepts.
+
+        ``_start_master`` launches ``run_master`` as a task; on a busy CI runner
+        the server may not have finished binding when the test connects, which
+        previously surfaced as a flaky ``ConnectionRefusedError``. Retry the
+        connect until it succeeds (the first successful connection is the real
+        one the test uses, so there is no spurious extra connection) rather than
+        relying on a fixed sleep.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            try:
+                return await asyncio.open_connection("127.0.0.1", port)
+            except (ConnectionRefusedError, OSError):
+                if loop.time() >= deadline:
+                    raise
+                await asyncio.sleep(0.02)
 
     def _compute_hmac(self, secret: str, nonce_hex: str) -> str:
         nonce = bytes.fromhex(nonce_hex)
@@ -430,6 +446,43 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             master_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 _ = await master_task
+
+    async def test_open_raw_connection_retries_until_listening(self):
+        """_open_raw_connection retries past ConnectionRefusedError until the
+        server is accepting (the fix for the flaky readiness race)."""
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        # Nothing is listening yet, so the first connects are refused; start the
+        # server after a delay that spans several retry intervals.
+        async def handle(reader, writer):
+            writer.close()
+
+        async def start_late():
+            await asyncio.sleep(0.15)
+            return await asyncio.start_server(handle, "127.0.0.1", port)
+
+        server_task = asyncio.create_task(start_late())
+        try:
+            reader, writer = await self._open_raw_connection(port, timeout=5.0)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        finally:
+            server = await server_task
+            server.close()
+            await server.wait_closed()
+
+    async def test_open_raw_connection_gives_up_after_deadline(self):
+        """If nothing ever listens, the retry loop re-raises once the deadline
+        passes rather than spinning forever."""
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        # Port is free and no server is started, so every connect is refused.
+        with self.assertRaises((ConnectionRefusedError, OSError)):
+            await self._open_raw_connection(port, timeout=0.1)
 
 
 if __name__ == "__main__":
