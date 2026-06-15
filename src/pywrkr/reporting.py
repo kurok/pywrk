@@ -426,6 +426,11 @@ def build_results_dict(
         "content_length_errors": stats.content_length_errors,
         "status_codes": dict(stats.status_codes),
         "error_types": dict(stats.error_types),
+        # Throughput timeline as [seconds_from_start, requests_in_interval] pairs.
+        # Always present (empty list when not collected) so JSON/CI consumers can
+        # rely on the key. Timestamps are already rebased to a [0, duration) axis
+        # by merge_stats(); see normalize_timeline.
+        "rps_timeline": [[round(ts, 3), count] for ts, count in stats.rps_timeline],
     }
     if config is not None and config.tags:
         result["tags"] = dict(config.tags)

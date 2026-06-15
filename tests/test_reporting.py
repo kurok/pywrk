@@ -425,6 +425,24 @@ class TestGatlingHtmlReport(unittest.TestCase):
         self.assertIn('labels: ["5"]', html)
 
 
+class TestBuildResultsDictRpsTimeline(unittest.TestCase):
+    """#173: build_results_dict must export the throughput timeline for JSON/CI."""
+
+    def test_rps_timeline_exported_as_pairs(self):
+        stats = WorkerStats()
+        stats.total_requests = 30
+        stats.rps_timeline = [(0.0, 10), (1.0, 12), (2.0, 8)]
+        result = build_results_dict(stats, 3.0, 5)
+        self.assertEqual(result["rps_timeline"], [[0.0, 10], [1.0, 12], [2.0, 8]])
+        # Survives a JSON round-trip (the whole point of the field).
+        round_tripped = json.loads(json.dumps(result))
+        self.assertEqual(round_tripped["rps_timeline"][1], [1.0, 12])
+
+    def test_rps_timeline_key_present_even_when_empty(self):
+        result = build_results_dict(WorkerStats(), 1.0, 1)
+        self.assertEqual(result["rps_timeline"], [])
+
+
 class TestRpsTimelineRendering(unittest.TestCase):
     """Regression tests for #172.
 
