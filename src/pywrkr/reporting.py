@@ -239,10 +239,21 @@ def parse_threshold(expr: str) -> "Threshold":
             value /= 1000.0
         elif unit == "us":
             value /= 1_000_000.0
-        elif unit == "s" or unit is None:
-            pass  # already seconds
         elif unit == "%":
             raise ValueError(f"Invalid unit '%' for latency metric {metric!r} in: {expr!r}")
+        elif unit is None:
+            # A bare latency number is interpreted as seconds, which silently
+            # turns a misremembered 'p99<5' (meant as 5ms) into a green gate.
+            # Keep the seconds semantics for backward compatibility, but warn.
+            _logger.warning(
+                "Threshold %r has no time unit; interpreting %s as %s seconds. "
+                "Add an explicit unit (e.g. '%sms') to avoid silently gating in seconds.",
+                expr.strip(),
+                raw_value,
+                raw_value,
+                raw_value,
+            )
+        # else: unit == "s" -> already in seconds, nothing to convert
     elif metric == "error_rate":
         # '%' is optional; value is always a percentage number
         if unit in ("ms", "s", "us"):

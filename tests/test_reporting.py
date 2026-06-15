@@ -147,6 +147,25 @@ class TestParseThreshold(unittest.TestCase):
         self.assertAlmostEqual(th.value, 0.1)
 
 
+class TestParseThresholdUnitlessWarning(unittest.TestCase):
+    """#174: a unitless latency threshold is still parsed as seconds, but must warn."""
+
+    def test_unitless_latency_warns_and_stays_seconds(self):
+        with self.assertLogs("pywrkr.reporting", level="WARNING") as cm:
+            th = parse_threshold("p99<5")
+        self.assertAlmostEqual(th.value, 5.0)  # seconds, unchanged (non-breaking)
+        self.assertTrue(any("no time unit" in line for line in cm.output))
+
+    def test_unit_bearing_latency_does_not_warn(self):
+        with self.assertNoLogs("pywrkr.reporting", level="WARNING"):
+            parse_threshold("p95 < 50ms")
+
+    def test_unitless_rps_does_not_warn(self):
+        # rps is legitimately unitless; only latency metrics should warn.
+        with self.assertNoLogs("pywrkr.reporting", level="WARNING"):
+            parse_threshold("rps > 100")
+
+
 class TestEvaluateThresholds(unittest.TestCase):
     """Tests for evaluate_thresholds."""
 
