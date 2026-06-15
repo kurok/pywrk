@@ -29,3 +29,4 @@ tfplan
 
 # OS
 .DS_Store
+.coverage
