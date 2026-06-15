@@ -363,11 +363,21 @@ class TestWorkerAuth(unittest.IsolatedAsyncioTestCase):
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
 
+        ready = asyncio.Event()
         task = asyncio.create_task(
-            run_master(config, "127.0.0.1", port, expect_workers=1, worker_secret=secret),
+            run_master(
+                config,
+                "127.0.0.1",
+                port,
+                expect_workers=1,
+                worker_secret=secret,
+                ready=ready,
+            ),
             name="master",
         )
-        await asyncio.sleep(0.05)  # let the server bind
+        # Wait until the server is actually accepting connections before any
+        # worker/raw client connects — deterministic, unlike a fixed sleep.
+        await asyncio.wait_for(ready.wait(), timeout=10)
         return task, port
 
     async def test_correct_secret_admitted(self):
