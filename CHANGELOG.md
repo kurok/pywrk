@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking for `from pywrkr import *` consumers)
-
-- Removed 15 underscore-prefixed internal names from `__all__`: `_get_metric_value`, `_compare`, `_html_escape`, `_format_latency_short`, `_build_request_headers`, `_create_ssl_context`, `_step_passed`, `_extract_step_result`, `_write_autofind_json`, `_serialize_config`, `_deserialize_config`, `_serialize_stats`, `_deserialize_stats`, `_send_msg`, `_recv_msg`. These were never intended as public API. They remain importable directly from their source modules (`pywrkr.reporting`, `pywrkr.workers`, `pywrkr.distributed`). (#122)
-
 ## [1.5.4] - 2026-06-15
 
 ### Added
@@ -23,6 +19,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Throughput timeline (single-node)**: the console printed only a header and HTML x-axis labels were large negative numbers, because the reporters subtracted the monotonic start time from an already-rebased timeline. Bucketing is now relative to the timeline's own origin. (#172)
 - **Thresholds**: a unitless `--threshold` latency expression (e.g. `p99<5`) was silently interpreted as seconds; it now emits a warning naming the assumed unit so a misremembered unit no longer produces a falsely green CI gate. (#174)
 - **Tests**: removed a connection race in the distributed worker-authentication tests that intermittently failed CI with `ConnectionRefusedError`. (#178, #179)
+
+## [1.5.3] - 2026-06-12
+
+### Fixed
+
+- Update tests to use canonical imports after the CodeQL cleanup, and fix a `ruff` I001 import-sort error in tests.
+
+### Changed
+
+- Switch the README version badge to GitHub Releases.
+
+## [1.5.2] - 2026-06-12
+
+### Fixed
+
+- Resolve all 10 remaining CodeQL code-scanning alerts.
+
+## [1.5.1] - 2026-06-12
+
+- Maintenance re-release (version bump only; no functional changes).
+
+## [1.5.0] - 2026-06-12
+
+### Added
+
+- **Distributed auth**: HMAC-SHA256 challenge-response authentication for the master/worker protocol. (#165)
+
+### Changed
+
+- **Breaking for `from pywrkr import *` consumers**: removed 15 underscore-prefixed internal names from `__all__` (`_get_metric_value`, `_compare`, `_html_escape`, `_format_latency_short`, `_build_request_headers`, `_create_ssl_context`, `_step_passed`, `_extract_step_result`, `_write_autofind_json`, `_serialize_config`, `_deserialize_config`, `_serialize_stats`, `_deserialize_stats`, `_send_msg`, `_recv_msg`). They were never intended as public API and remain importable from their source modules (`pywrkr.reporting`, `pywrkr.workers`, `pywrkr.distributed`). (#159)
+- Derive `__version__` from `importlib.metadata` to remove the dual-location version. (#149)
+- Consolidate stats merging into `config.merge_stats` and apply the step-name cap in distributed mode. (#147)
+- Unify the percentile formula via `_nearest_rank_idx`. (#118, #142)
+- Split `print_results` into separate console-output and file-I/O halves. (#153)
+
+### Security
+
+- Escape dynamic HTML content in the report generators to prevent XSS. (#162)
+- Eliminate shell injection in the ECS task and Jenkinsfile. (#163)
+- Add SSRF protection to the Jenkins pipeline `TARGET_URL` parameter. (#161)
+- Scope AWS credentials to `withCredentials` blocks in the Jenkinsfile. (#157)
+- Warn when credentials are used with SSL verification disabled. (#160)
+
+### Fixed
+
+- Allow a list body in `ScenarioStep`. (#119, #141)
+- Surface OTel/Prometheus export errors as a non-zero exit code. (#117, #143)
+- Initialize `end_time` before the `try` block in `_finalize_run`.
+- Create a fresh `trace_ctx` per scenario step.
+- Remove the dead `WorkerStats.results` field.
+
+### Performance
+
+- Batch `rps_timeline` by second instead of per-request in the user and scenario workers. (#146)
+- Move the LiveDashboard latency sort off the asyncio event loop. (#152)
+- Hoist `ClientTimeout` construction outside the request loop for fixed-count runs. (#144)
+
+### Dependencies
+
+- Pin `aiohttp` to `~=3.14` to block future 4.x breakage. (#145)
+
+### CI
+
+- Enforce Codecov thresholds and add a runtime `__version__` check to the release workflow. (#156)
+- Add an `all-checks-pass` gate and SHA-pin mutable action refs. (#155)
+- Add a `test-otel` job so the OTel integration tests run in CI. (#151)
+
+### Docs
+
+- Lead the README with an animated demo, install, and a minimal example. (#106)
+- Document `--ssl-verify` / `--ca-bundle` in the README options table; add pre-commit install to CONTRIBUTING. (#148)
+- Warn about ReDoS risk on `--include` / `--exclude` regex patterns. (#164)
+
+## [1.4.5] - 2026-06-06
+
+### Security
+
+- Bump `aiohttp` to `>=3.14.0` to fix CVE-2025-47279 and CVE-2025-47280. (#105)
+
+## [1.4.4] - 2026-05-29
+
+### Fixed
+
+- Resolve audit-confirmed defects across all modules. (#102)
+
+## [1.4.3] - 2026-05-25
+
+### Security
+
+- Bump `idna` 3.13 → 3.16 (CVE-2026-45409). (#100)
+
+## [1.4.2] - 2026-05-18
+
+### Security
+
+- Upgrade `urllib3` to 2.7.0 to fix CVE-2025-4793 and CVE-2025-4435. (#98)
 
 ## [1.4.1] - 2026-05-02
 
@@ -51,6 +143,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Resolve remaining CodeQL code scanning alerts (unused/repeated imports, ineffectual statements)
+
+## [1.3.5] - 2026-04-17
+
+### Fixed
+
+- Resolve CodeQL code-scanning alerts. (#79)
+
+### Security
+
+- Bump `aiohttp` and `pytest` to resolve Dependabot security alerts. (#77)
+
+### CI
+
+- Add CodeQL analysis, update `actions/checkout` to v6, and add a CodeQL badge. (#78)
 
 ## [1.3.4] - 2026-04-01
 
