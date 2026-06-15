@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed 15 underscore-prefixed internal names from `__all__`: `_get_metric_value`, `_compare`, `_html_escape`, `_format_latency_short`, `_build_request_headers`, `_create_ssl_context`, `_step_passed`, `_extract_step_result`, `_write_autofind_json`, `_serialize_config`, `_deserialize_config`, `_serialize_stats`, `_deserialize_stats`, `_send_msg`, `_recv_msg`. These were never intended as public API. They remain importable directly from their source modules (`pywrkr.reporting`, `pywrkr.workers`, `pywrkr.distributed`). (#122)
 
+## [1.5.4] - 2026-06-15
+
+### Added
+
+- JSON output now includes an `rps_timeline` field (`[seconds_from_start, requests_in_interval]` pairs), so `--json` and programmatic consumers can access the throughput timeline. (#173)
+- `run_master` accepts an optional `ready: asyncio.Event` that is set once the listener is bound, letting callers connect only after the bind completes. (#179)
+
+### Fixed
+
+- **Throughput timeline (single-node)**: the console printed only a header and HTML x-axis labels were large negative numbers, because the reporters subtracted the monotonic start time from an already-rebased timeline. Bucketing is now relative to the timeline's own origin. (#172)
+- **Thresholds**: a unitless `--threshold` latency expression (e.g. `p99<5`) was silently interpreted as seconds; it now emits a warning naming the assumed unit so a misremembered unit no longer produces a falsely green CI gate. (#174)
+- **Tests**: removed a connection race in the distributed worker-authentication tests that intermittently failed CI with `ConnectionRefusedError`. (#178, #179)
+
 ## [1.4.1] - 2026-05-02
 
 ### Fixed
