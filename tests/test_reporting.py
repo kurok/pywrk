@@ -10,6 +10,7 @@ from pywrkr.config import BenchmarkConfig, Threshold, WorkerStats
 from pywrkr.multi_url import MultiUrlResult
 from pywrkr.reporting import (
     _EXPORT_METRICS,
+    _bucket_timeline,
     _resolve_metric_value,
     build_results_dict,
     compute_percentiles,
@@ -21,6 +22,7 @@ from pywrkr.reporting import (
     print_latency_histogram,
     print_multi_url_summary,
     print_percentiles,
+    print_rps_timeline,
     print_threshold_results,
     write_csv_output,
     write_json_output,
@@ -421,6 +423,44 @@ class TestGatlingHtmlReport(unittest.TestCase):
         # stretched the chart across whole seconds.
         self.assertIn("data: [50]", html)
         self.assertIn('labels: ["5"]', html)
+
+
+class TestRpsTimelineRendering(unittest.TestCase):
+    """Regression tests for #172.
+
+    merge_stats() rebases each worker's rps_timeline onto a [0, duration) axis,
+    yet the console and HTML reporters are still called with the monotonic
+    start_time. Bucketing must therefore be relative to the timeline's own
+    origin; otherwise the console prints only a header and HTML x-axis labels
+    are large negative numbers.
+    """
+
+    def test_bucket_timeline_is_origin_relative(self):
+        # Raw monotonic timestamps: first entry is the origin, not zero.
+        self.assertEqual(
+            _bucket_timeline([(1000.0, 5), (1001.0, 7), (1002.0, 9)], 1),
+            {0: 5, 1: 7, 2: 9},
+        )
+        self.assertEqual(_bucket_timeline([], 1), {})
+
+    def test_console_renders_with_nonzero_monotonic_start(self):
+        timeline = [(0.0, 100), (1.0, 120), (2.0, 110)]  # already rebased to 0
+        buf = io.StringIO()
+        # A non-zero monotonic start (as the real CLI passes) must not blank bars.
+        print_rps_timeline(timeline, 12345.678, 3, file=buf)
+        out = buf.getvalue()
+        self.assertEqual(out.count("req/s"), 3)  # one bar per second bucket
+
+    def test_html_labels_non_negative_with_monotonic_start(self):
+        import re
+
+        stats = WorkerStats()
+        stats.total_requests = 300
+        stats.latencies = [0.01] * 10
+        stats.rps_timeline = [(0.0, 100), (1.0, 100), (2.0, 100)]
+        html = generate_gatling_html_report(stats, 3.0, 10, start_time=99999.0)
+        self.assertEqual(re.findall(r'"-\d+s"', html), [])  # no negative labels
+        self.assertRegex(html, r'"\d+s"')  # real second labels present
 
 
 if __name__ == "__main__":

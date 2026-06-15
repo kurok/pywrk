@@ -354,19 +354,37 @@ def print_percentiles(latencies: list[float], file: TextIO = sys.stdout) -> None
         print(f"    p{p:<6} {format_duration(val):>12}", file=file)
 
 
+def _bucket_timeline(timeline: list[tuple[float, int]], bucket_size: int) -> dict[int, int]:
+    """Bucket an rps_timeline into ``{bucket_index: summed_count}``.
+
+    Timestamps are bucketed relative to the timeline's own earliest entry, not
+    an external clock. ``merge_stats`` already rebases each worker's timeline
+    onto a ``[0, duration)`` axis (see ``normalize_timeline``), so subtracting a
+    monotonic ``start_time`` again would push every bucket index far negative —
+    which empties the console timeline and produces negative HTML x-axis labels.
+    """
+    buckets: dict[int, int] = defaultdict(int)
+    if not timeline:
+        return buckets
+    origin = min(ts for ts, _ in timeline)
+    for ts, count in timeline:
+        buckets[int((ts - origin) / bucket_size)] += count
+    return buckets
+
+
 def print_rps_timeline(
     timeline: list[tuple[float, int]], start: float, duration: float, file: TextIO = sys.stdout
 ) -> None:
-    """Print requests-per-second timeline."""
+    """Print requests-per-second timeline.
+
+    ``start`` is accepted for backward compatibility; bucketing is done relative
+    to the timeline's own origin via :func:`_bucket_timeline`.
+    """
     if not timeline:
         return
     bucket_size = max(1, int(duration / 20))
-    buckets: dict[int, int] = defaultdict(int)
-    for ts, count in timeline:
-        bucket = int((ts - start) / bucket_size)
-        buckets[bucket] += count
-    if not buckets:
-        return
+    # A non-empty timeline always yields at least one bucket (origin -> 0).
+    buckets = _bucket_timeline(timeline, bucket_size)
 
     def _bucket_span(i: int) -> float:
         # The final partial bucket spans only the remaining real time, so
@@ -581,10 +599,7 @@ def generate_gatling_html_report(
     rps_values: list[float] = []
     if stats.rps_timeline:
         bucket_size = max(1, int(duration / 40))
-        time_buckets: dict[int, int] = defaultdict(int)
-        for ts, count in stats.rps_timeline:
-            bucket = int((ts - start_time) / bucket_size)
-            time_buckets[bucket] += count
+        time_buckets = _bucket_timeline(stats.rps_timeline, bucket_size)
         for b in sorted(time_buckets.keys()):
             # Divide the final partial bucket by its real span, not the full
             # bucket_size, so the last bar reflects the true rate.
