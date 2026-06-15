@@ -322,6 +322,7 @@ async def run_master(
     port: int,
     expect_workers: int,
     worker_secret: str | None = None,
+    ready: asyncio.Event | None = None,
 ) -> tuple[WorkerStats, int] | None:
     """Run in master mode: wait for workers, distribute config, collect results.
 
@@ -329,6 +330,9 @@ async def run_master(
     HMAC-SHA256 challenge-response before it is admitted.  Workers that fail
     authentication or do not respond within ``_WORKER_AUTH_TIMEOUT_SECONDS``
     are disconnected.
+
+    If *ready* is provided, it is set once the server is listening, so callers
+    (and tests) can connect only after the bind completes instead of racing it.
     """
     logger.info(
         "Master: listening on %s:%s, waiting for %s worker(s)...", host, port, expect_workers
@@ -397,6 +401,9 @@ async def run_master(
             ready_event.set()
 
     server = await asyncio.start_server(handle_worker, host, port)
+    if ready is not None:
+        # Signal that the listener is bound and accepting connections.
+        ready.set()
     server_closed = False
     try:
         # Wait for all workers with a timeout
