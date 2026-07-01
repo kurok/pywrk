@@ -1,14 +1,14 @@
 # Production Dockerfile for pywrkr load testing on ECS Fargate.
 # Includes scenario files baked into the image.
 
-FROM python:3.13-slim AS builder
+FROM python:3.15-rc-alpine AS builder
 
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 RUN pip install --no-cache-dir build && python -m build --wheel
 
-FROM python:3.13-slim
+FROM python:3.15-rc-alpine
 
 LABEL org.opencontainers.image.source="https://github.com/kurok/pywrkr"
 LABEL org.opencontainers.image.description="pywrkr — distributed HTTP benchmarking"
