@@ -1,11 +1,11 @@
-FROM python:3.13-slim AS builder
+FROM python:3.15-rc-alpine AS builder
 
 WORKDIR /build
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 RUN pip install --no-cache-dir build && python -m build --wheel
 
-FROM python:3.13-slim
+FROM python:3.15-rc-alpine
 
 COPY --from=builder /build/dist/*.whl /tmp/
 # Install with [otel] extra for OpenTelemetry/Prometheus observability support.
