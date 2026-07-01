@@ -15,7 +15,14 @@ LABEL org.opencontainers.image.description="pywrkr — distributed HTTP benchmar
 LABEL org.opencontainers.image.licenses="MIT"
 
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir "/tmp/*.whl[all]" && rm /tmp/*.whl
+# Python 3.15 is still an RC, so aiohttp and its C-extension deps have no
+# prebuilt musllinux/cp315 wheels yet and must compile from source. Install a
+# toolchain as a virtual package and drop it in the same layer to keep the
+# runtime image slim.
+RUN apk add --no-cache --virtual .build-deps build-base && \
+    pip install --no-cache-dir "/tmp/*.whl[all]" && \
+    apk del .build-deps && \
+    rm /tmp/*.whl
 
 # Bake scenario files into the image
 COPY infra/scenarios/ /scenarios/

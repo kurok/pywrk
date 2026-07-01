@@ -15,6 +15,13 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN uv pip install --system --no-cache /tmp/*.whl && rm /tmp/*.whl
+# Python 3.15 is still an RC, so aiohttp and its C-extension deps have no
+# prebuilt musllinux/cp315 wheels yet and must compile from source. Install a
+# toolchain as a virtual package and drop it in the same layer to keep the
+# runtime image slim.
+RUN apk add --no-cache --virtual .build-deps build-base && \
+    uv pip install --system --no-cache /tmp/*.whl && \
+    apk del .build-deps && \
+    rm /tmp/*.whl
 
 ENTRYPOINT ["pywrkr"]
