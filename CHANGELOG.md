@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-07-29
+
+### Security
+
+- Bump `aiohttp` to 3.14.1 and `msgpack` to 1.2.1. (#182)
+- Bump `pip` to 26.1.2 in `uv.lock` to resolve CVE-2026-8643 (path traversal in entry point names). (#198)
+
+### Changed
+
+- **Docker**: move the base image to `python:3.15-rc-alpine`. (#183)
+
+### Fixed
+
+- **Docker**: install the build toolchain needed for Alpine wheel compilation. (#184)
+
 ## [1.5.4] - 2026-06-15
 
 ### Added
