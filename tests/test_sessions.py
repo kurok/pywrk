@@ -14,7 +14,6 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-import pywrkr.workers
 from pywrkr.main import _build_parser
 from pywrkr.workers import _create_cookie_jar, _target_is_ip_literal
 
@@ -335,7 +334,9 @@ class TestCookieSessionIntegration(_SessionServerMixin, AioHTTPTestCase):
         # The invariant itself, asserted directly: the behavioural tests above
         # depend on request interleaving, this one does not.
         jars: list[object] = []
-        real_create = pywrkr.workers._create_cookie_jar
+        # Bound at import time, so it still refers to the real factory once the
+        # module attribute below is patched.
+        real_create = _create_cookie_jar
 
         def spy(config):
             jar = real_create(config)
