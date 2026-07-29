@@ -117,6 +117,7 @@ def _serialize_scenario(scenario: Scenario | None) -> dict | None:
         "steps": [_serialize_scenario_step(s) for s in scenario.steps],
         "on_extract_failure": scenario.on_extract_failure,
         "on_template_error": scenario.on_template_error,
+        "session": scenario.session,
     }
     if scenario.base_url:
         result["base_url"] = scenario.base_url
@@ -134,6 +135,7 @@ def _deserialize_scenario(data: dict | None) -> Scenario | None:
         steps=[_deserialize_scenario_step(s) for s in data.get("steps", [])],
         on_extract_failure=data.get("on_extract_failure", defaults.on_extract_failure),
         on_template_error=data.get("on_template_error", defaults.on_template_error),
+        session=data.get("session", defaults.session),
     )
 
 
@@ -152,6 +154,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "keepalive": config.keepalive,
         "basic_auth": config.basic_auth,
         "cookies": list(config.cookies),
+        "session_cookies": config.session_cookies,
         "verify_content_length": config.verify_content_length,
         "verbosity": config.verbosity,
         "random_param": config.random_param,
@@ -193,6 +196,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         keepalive=data.get("keepalive", True),
         basic_auth=data.get("basic_auth"),
         cookies=data.get("cookies", []),
+        session_cookies=data.get("session_cookies", True),
         verify_content_length=data.get("verify_content_length", False),
         verbosity=data.get("verbosity", 0),
         random_param=data.get("random_param", False),

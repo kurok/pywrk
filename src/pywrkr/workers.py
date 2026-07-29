@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import ipaddress
 import json
 import logging
 import random
@@ -33,6 +34,7 @@ from pywrkr.reporting import (
     _format_latency_short,
     aggregate_breakdowns,
     compute_percentiles,
+    describe_session_mode,
     evaluate_thresholds,
     format_bytes,
     format_duration,
@@ -643,15 +645,53 @@ async def _execute_request(
     return result
 
 
+def _target_is_ip_literal(url: str) -> bool:
+    """Return True when *url*'s host is a bare IP address rather than a name.
+
+    aiohttp's default cookie jar refuses to store cookies for IP hosts (the
+    public-suffix rules do not apply to them), which silently breaks cookie
+    sessions against the ``http://127.0.0.1:8080`` targets load tests usually
+    point at. Detecting the case lets the jar be opened up deliberately.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _create_cookie_jar(config: BenchmarkConfig) -> "aiohttp.CookieJar | aiohttp.DummyCookieJar":
+    """Build the cookie jar for one virtual user's session.
+
+    ``--no-session-cookies`` yields a ``DummyCookieJar``, which discards every
+    ``Set-Cookie`` so requests carry only the static ``-C`` header — the
+    behaviour to keep when benchmarking a cache or CDN layer, where per-user
+    cookies would fragment the keyspace.
+    """
+    if not config.session_cookies:
+        return aiohttp.DummyCookieJar()
+    return aiohttp.CookieJar(unsafe=_target_is_ip_literal(config.url))
+
+
 def _build_session_kwargs(
     connector: aiohttp.TCPConnector,
     config: BenchmarkConfig,
     stats: WorkerStats,
+    cookie_jar: "aiohttp.CookieJar | aiohttp.DummyCookieJar | None" = None,
 ) -> dict:
-    """Build kwargs for aiohttp.ClientSession including optional trace config."""
+    """Build kwargs for aiohttp.ClientSession including optional trace config.
+
+    *cookie_jar* is omitted rather than passed as None when absent, so aiohttp's
+    own default applies and plain benchmark mode keeps its current behaviour.
+    """
     kwargs: dict = {"connector": connector, "connector_owner": False}
     if config.latency_breakdown:
         kwargs["trace_configs"] = [create_trace_config(stats)]
+    if cookie_jar is not None:
+        kwargs["cookie_jar"] = cookie_jar
     return kwargs
 
 
@@ -719,7 +759,10 @@ async def worker(
 
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
-    session_kwargs = _build_session_kwargs(connector, config, stats)
+    # Plain mode has no virtual-user identity to isolate, so it keeps aiohttp's
+    # default jar unless cookie sessions were explicitly turned off.
+    jar = None if config.session_cookies else _create_cookie_jar(config)
+    session_kwargs = _build_session_kwargs(connector, config, stats, jar)
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
 
     async with aiohttp.ClientSession(**session_kwargs) as session:
@@ -799,7 +842,9 @@ async def user_worker(
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
     active_users.count += 1
-    session_kwargs = _build_session_kwargs(connector, config, stats)
+    # One jar per virtual user: Set-Cookie from this user's responses is replayed
+    # only to this user, so N VUs look like N distinct clients to the target.
+    session_kwargs = _build_session_kwargs(connector, config, stats, _create_cookie_jar(config))
     client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
     interval_start = start_time
     interval_count = 0
@@ -928,7 +973,9 @@ async def scenario_worker(
     Variables extracted by a step's ``extract`` rules are bound in a dict that
     is private to this coroutine (i.e. per virtual user) and cleared at the top
     of every iteration, so tokens never leak between users and each iteration
-    starts from the same known state.
+    starts from the same known state. Cookies get the same treatment through a
+    per-VU jar, which ``session: fresh_per_iteration`` additionally empties
+    between iterations.
 
     NOTE: Shares a loop skeleton with worker and user_worker (rate limiting,
     duration tracking, stats recording). Any change to that logic must be
@@ -952,13 +999,17 @@ async def scenario_worker(
     variables: dict[str, str] = {}
     keep_literal = scenario.on_template_error == "keep_literal"
     abort_on_extract_failure = scenario.on_extract_failure == "abort_iteration"
+    fresh_session_per_iteration = scenario.session == "fresh_per_iteration"
 
     active_users.count += 1
     try:
-        session_kwargs = _build_session_kwargs(connector, config, stats)
+        cookie_jar = _create_cookie_jar(config)
+        session_kwargs = _build_session_kwargs(connector, config, stats, cookie_jar)
         async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
                 variables.clear()
+                if fresh_session_per_iteration:
+                    cookie_jar.clear()
                 iteration_aborted = False
                 # An iteration contributes at most one error to the aggregate
                 # total: a failed request, a failed extraction, and the ${var}
@@ -1482,6 +1533,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
             logger.info("  Rate Limit: %s", rate_str)
         if config.random_param:
             logger.info("  Cache-Buster: random _cb= parameter per request")
+        logger.info("  Sessions: %s", describe_session_mode(config))
         logger.info("")
 
     stop_event = asyncio.Event()

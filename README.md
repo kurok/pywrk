@@ -38,6 +38,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 
 - **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
 - **Scripted scenarios** (`--scenario`): multi-step flows with variable extraction and `${var}` correlation — log in, capture the token, and hit authenticated endpoints with it
+- **Per-user sessions:** each virtual user keeps its own cookie jar, so cookie-session logins work and N users look like N real clients rather than one anonymous loop
 - **Five benchmarking modes:**
   - **Duration mode** (`-d`): wrk-style, run for N seconds
   - **Request-count mode** (`-n`): ab-style, send exactly N requests
@@ -223,7 +224,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | `-b` | `--body` | Request body string |
 | `-p` | `--post-file` | File containing POST body data |
 | `-A` | `--basic-auth` | Basic HTTP auth as `user:pass` |
-| `-C` | `--cookie` | Cookie as `name=value` (repeatable) |
+| `-C` | `--cookie` | Cookie as `name=value` (repeatable) — always sent, in every mode |
+| | `--no-session-cookies` | Ignore `Set-Cookie`. By default each virtual user keeps its own cookie jar |
 | `-k` | `--keepalive` | Enable keep-alive (default: on) |
 | | `--no-keepalive` | Disable keep-alive |
 | `-l` | `--verify-length` | Verify response Content-Length consistency |
@@ -445,6 +447,42 @@ Those dedicated counters record every occurrence, but the headline `Total Errors
 its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
 
 Working example: [`examples/scenario-correlation.json`](examples/scenario-correlation.json).
+
+### Sessions & Cookies
+
+In user-simulation and scenario modes every virtual user gets **its own cookie jar**, so
+`Set-Cookie` is stored and replayed for that user across steps and iterations. Cookie-session
+logins — the most common form of web auth — work without any correlation setup:
+
+```bash
+# The server sets a session cookie on /login; each user carries its own from then on
+pywrkr --scenario examples/scenario-cookie-session.json -u 100 -d 60
+```
+
+This also means N virtual users look like N distinct clients to the target, which matters for
+anything keyed on identity: session-store load, sticky-session balancing, per-user rate limits,
+and cache hit rates.
+
+| Setting | Where | Effect |
+|---------|-------|--------|
+| default | — | one cookie jar per virtual user, kept for the whole run |
+| `session: fresh_per_iteration` | scenario file | empty the jar at the start of each iteration, so every pass is a brand-new visitor |
+| `--no-session-cookies` | CLI | ignore `Set-Cookie` entirely; only the static `-C` cookies are sent |
+
+**Static `-C` cookies** are sent on every request in every mode. They travel in the request's
+`Cookie` header rather than the jar, so they survive `session: fresh_per_iteration` and are
+unaffected by `--no-session-cookies`. A server-set cookie of the same name is sent alongside them.
+
+**IP-address targets:** cookie jars normally refuse to store cookies for a bare IP host, which
+would silently disable sessions against the `http://127.0.0.1:8080` targets load tests usually
+point at. pywrkr detects an IP literal in the target URL and opens the jar (`unsafe`) for it, so
+loopback and internal-IP targets behave like named hosts.
+
+**Plain connection mode** (`-c`/`-d`, no `-u`) is unchanged: there is no per-user identity to
+isolate, so it keeps the client library's default jar. `--no-session-cookies` still applies.
+
+**Distributed mode:** jars live per virtual user inside each worker process. There is no shared
+session state between worker nodes, so a session started on one node is never continued on another.
 
 ### Cache-Busting Mode
 

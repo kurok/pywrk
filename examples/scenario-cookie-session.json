@@ -1,0 +1,46 @@
+{
+  "name": "Cookie-session login flow",
+  "base_url": "https://app.example.com",
+  "think_time": 1.0,
+  "session": "persistent",
+  "steps": [
+    {
+      "name": "open-login-page",
+      "method": "GET",
+      "path": "/login",
+      "extract": {
+        "csrf": {
+          "regex": "name=\"csrf_token\" value=\"([^\"]+)\""
+        }
+      }
+    },
+    {
+      "name": "submit-login",
+      "method": "POST",
+      "path": "/login",
+      "headers": {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "body": "username=demo&password=demo&csrf_token=${csrf}",
+      "assert_status": 200
+    },
+    {
+      "name": "dashboard",
+      "method": "GET",
+      "path": "/dashboard",
+      "assert_status": 200,
+      "assert_body_contains": "Signed in"
+    },
+    {
+      "name": "account-settings",
+      "method": "GET",
+      "path": "/account/settings",
+      "assert_status": 200
+    },
+    {
+      "name": "logout",
+      "method": "POST",
+      "path": "/logout"
+    }
+  ]
+}
