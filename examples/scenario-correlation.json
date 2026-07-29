@@ -1,0 +1,77 @@
+{
+  "name": "Login flow with correlation",
+  "base_url": "https://api.example.com",
+  "think_time": 0.5,
+  "on_extract_failure": "abort_iteration",
+  "on_template_error": "abort_iteration",
+  "steps": [
+    {
+      "name": "login",
+      "method": "POST",
+      "path": "/auth/login",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "{\"user\": \"demo\", \"pass\": \"demo\"}",
+      "assert_status": 200,
+      "extract": {
+        "token": {
+          "json": "$.access_token"
+        },
+        "user_id": {
+          "json": "$.user.id"
+        },
+        "session_id": {
+          "header": "X-Session-Id"
+        }
+      }
+    },
+    {
+      "name": "get-profile",
+      "method": "GET",
+      "path": "/users/${user_id}",
+      "headers": {
+        "Authorization": "Bearer ${token}",
+        "X-Session-Id": "${session_id}"
+      },
+      "assert_status": 200
+    },
+    {
+      "name": "open-form",
+      "method": "GET",
+      "path": "/users/${user_id}/settings",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "extract": {
+        "csrf": {
+          "regex": "name=\"csrf\" value=\"([^\"]+)\""
+        }
+      }
+    },
+    {
+      "name": "save-settings",
+      "method": "POST",
+      "path": "/users/${user_id}/settings",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "body": {
+        "csrf": "${csrf}",
+        "preferences": {
+          "theme": "dark"
+        }
+      },
+      "assert_status": 200,
+      "think_time": 1.0
+    },
+    {
+      "name": "logout",
+      "method": "POST",
+      "path": "/auth/logout",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      }
+    }
+  ]
+}

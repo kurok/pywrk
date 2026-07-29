@@ -41,6 +41,12 @@ from pywrkr.reporting import (
     print_threshold_results,
     run_observability_exports,
 )
+from pywrkr.templating import (
+    TemplateError,
+    apply_extractors,
+    substitute,
+    substitute_structure,
+)
 from pywrkr.traffic_profiles import RateLimiter
 
 # Re-export aggregate_breakdowns for backward compatibility
@@ -111,6 +117,35 @@ def _record_step_latency(stats: WorkerStats, step_name: str, latency: float) -> 
         stats.step_latencies[step_name].append(latency)
     else:
         stats.step_latencies["[other steps]"].append(latency)
+
+
+def _record_extract_failures(
+    stats: WorkerStats,
+    failures: list[str],
+    step_name: str,
+    user_id: int,
+    already_counted: bool,
+) -> None:
+    """Book failed ``extract`` rules into the stats and the error breakdown.
+
+    ``extract_failures`` counts individual rules that produced no value, and
+    every one of them gets its own diagnostic key. ``errors`` is left alone when
+    the iteration has already been charged (*already_counted*) — otherwise a
+    single broken login would be counted once for the 4xx, once for each
+    unresolved rule, and again for the ``${var}`` that follows, pushing the error
+    rate past 100%.
+    """
+    stats.extract_failures += len(failures)
+    if not already_counted:
+        stats.errors += 1
+    for failure in failures:
+        stats.error_types[f"ExtractFailure: {failure}"] += 1
+    logger.warning(
+        "Scenario user %d step '%s' extraction failed: %s",
+        user_id,
+        step_name,
+        "; ".join(failures),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +469,16 @@ def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
 class _RequestResult:
     """Result from _execute_request; avoids creating dataclass per request."""
 
-    __slots__ = ("latency", "status", "data_len", "error_name", "cancelled")
+    __slots__ = (
+        "latency",
+        "status",
+        "data_len",
+        "error_name",
+        "cancelled",
+        "body",
+        "headers",
+        "counted_error",
+    )
 
     def __init__(self) -> None:
         self.latency: float = 0.0
@@ -442,6 +486,14 @@ class _RequestResult:
         self.data_len: int = 0
         self.error_name: str | None = None
         self.cancelled: bool = False
+        # Response payload/headers, retained only when capture_response is set
+        # (scenario steps with extract rules) so plain benchmarks keep no
+        # per-request references alive.
+        self.body: bytes | None = None
+        self.headers: dict[str, str] | None = None
+        # True when this request already contributed to stats.errors, so callers
+        # adding their own failure modes do not double-count it.
+        self.counted_error: bool = False
 
 
 async def _execute_request(
@@ -460,6 +512,7 @@ async def _execute_request(
     assert_status: int | None = None,
     assert_body_contains: str | None = None,
     log_prefix: str = "",
+    capture_response: bool = False,
 ) -> _RequestResult:
     """Execute a single HTTP request and record stats.
 
@@ -467,6 +520,10 @@ async def _execute_request(
     scenario_worker(). Handles: request execution, latency recording, status
     code counting, content-length verification, error handling, and step
     latency tracking.
+
+    The response body is read either way (it always has been — see the
+    ``resp.read()`` below); *capture_response* only controls whether the bytes
+    and headers are handed back to the caller for scenario variable extraction.
 
     Returns a _RequestResult with outcome details.
     """
@@ -487,6 +544,9 @@ async def _execute_request(
             result.latency = latency
             result.status = resp.status
             result.data_len = len(data)
+            if capture_response:
+                result.body = data
+                result.headers = dict(resp.headers)
 
             stats.total_requests += 1
             stats.total_bytes += len(data)
@@ -543,6 +603,9 @@ async def _execute_request(
             if not assertion_failed and resp.status >= 400:
                 stats.errors += 1
                 stats.error_types[f"HTTP {resp.status}"] += 1
+                result.counted_error = True
+            else:
+                result.counted_error = assertion_failed
 
             if config.verbosity >= 4:
                 logger.debug(
@@ -564,6 +627,7 @@ async def _execute_request(
         result.latency = latency
         error_name = type(e).__name__
         result.error_name = error_name
+        result.counted_error = True
         stats.total_requests += 1
         stats.errors += 1
         stats.error_types[error_name] += 1
@@ -815,6 +879,39 @@ def _prepare_step_body(step_body, headers: dict) -> bytes | None:
     return step_body
 
 
+def _render_step(
+    step,
+    base_headers: dict[str, str],
+    variables: dict[str, str],
+    keep_literal: bool,
+) -> tuple[str, dict[str, str], bytes | None]:
+    """Expand ``${var}`` placeholders in one step against the current variables.
+
+    Substitution covers the path, header names and values, and the body (walking
+    into JSON object/array bodies so placeholders work at any depth).
+
+    Returns:
+        ``(path, headers, body)`` ready to hand to ``_execute_request``.
+
+    Raises:
+        TemplateError: A placeholder names an unbound variable and
+            *keep_literal* is False.
+    """
+    path = substitute(step.path, variables, keep_literal)
+
+    headers = dict(base_headers)
+    for key, value in step.headers.items():
+        headers[substitute(key, variables, keep_literal)] = substitute(
+            value, variables, keep_literal
+        )
+
+    # substitute() short-circuits on strings without "${", so this stays cheap
+    # for the (common) steps that carry no placeholders at all.
+    body = substitute_structure(step.body, variables, keep_literal)
+
+    return path, headers, _prepare_step_body(body, headers)
+
+
 async def scenario_worker(
     user_id: int,
     config: BenchmarkConfig,
@@ -827,6 +924,11 @@ async def scenario_worker(
     rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Execute a scripted multi-step scenario in a loop.
+
+    Variables extracted by a step's ``extract`` rules are bound in a dict that
+    is private to this coroutine (i.e. per virtual user) and cleared at the top
+    of every iteration, so tokens never leak between users and each iteration
+    starts from the same known state.
 
     NOTE: Shares a loop skeleton with worker and user_worker (rate limiting,
     duration tracking, stats recording). Any change to that logic must be
@@ -846,11 +948,26 @@ async def scenario_worker(
     interval_start = start_time
     interval_count = 0
 
+    # Per-VU correlation scope; reset at the start of every iteration.
+    variables: dict[str, str] = {}
+    keep_literal = scenario.on_template_error == "keep_literal"
+    abort_on_extract_failure = scenario.on_extract_failure == "abort_iteration"
+
     active_users.count += 1
     try:
         session_kwargs = _build_session_kwargs(connector, config, stats)
         async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
+                variables.clear()
+                iteration_aborted = False
+                # An iteration contributes at most one error to the aggregate
+                # total: a failed request, a failed extraction, and the ${var}
+                # that could not resolve because of it are one broken flow, not
+                # three. The dedicated counters still record every occurrence.
+                iteration_error_counted = False
+                # Think time of the step the iteration reached, reused to pace a
+                # retry after an abort.
+                pace = 0.0
                 for step in scenario.steps:
                     if stop_event.is_set():
                         break
@@ -877,13 +994,30 @@ async def scenario_worker(
                     if config.duration is not None:
                         effective_timeout = _calc_effective_timeout(config, start_time)
                         client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
-                    request_url = make_url(f"{base_url}{step.path}", config.random_param)
-
-                    req_headers = dict(base_headers)
-                    req_headers.update(step.headers)
-                    body = _prepare_step_body(step.body, req_headers)
 
                     step_name = step.name or f"{step.method} {step.path}"
+                    think = step.think_time if step.think_time is not None else scenario.think_time
+                    if think <= 0 and config.think_time > 0:
+                        think = config.think_time
+                    pace = think
+
+                    try:
+                        step_path, req_headers, body = _render_step(
+                            step, base_headers, variables, keep_literal
+                        )
+                    except TemplateError as exc:
+                        stats.template_errors += 1
+                        stats.error_types[f"TemplateError: {exc}"] += 1
+                        if not iteration_error_counted:
+                            stats.errors += 1
+                            iteration_error_counted = True
+                        logger.warning(
+                            "Scenario user %d step '%s' template error: %s", user_id, step_name, exc
+                        )
+                        iteration_aborted = True
+                        break
+
+                    request_url = make_url(f"{base_url}{step_path}", config.random_param)
 
                     # Fresh dict per request so TraceConfig callbacks don't
                     # bleed timing from the previous step into this one.
@@ -905,9 +1039,12 @@ async def scenario_worker(
                         assert_status=step.assert_status,
                         assert_body_contains=step.assert_body_contains,
                         log_prefix=f"Scenario user {user_id} step '{step_name}' ",
+                        capture_response=bool(step.extract),
                     )
                     if result.cancelled:
                         return
+                    if result.counted_error:
+                        iteration_error_counted = True
 
                     interval_count += 1
                     now = time.monotonic()
@@ -916,10 +1053,38 @@ async def scenario_worker(
                         interval_start = now
                         interval_count = 0
 
-                    think = step.think_time if step.think_time is not None else scenario.think_time
-                    if think <= 0 and config.think_time > 0:
-                        think = config.think_time
+                    if step.extract:
+                        if result.error_name is None:
+                            values, failures = apply_extractors(
+                                step.extract, result.body, result.headers
+                            )
+                            variables.update(values)
+                            if failures:
+                                _record_extract_failures(
+                                    stats, failures, step_name, user_id, iteration_error_counted
+                                )
+                                iteration_error_counted = True
+                                iteration_aborted = abort_on_extract_failure
+                        else:
+                            # The request itself failed, so there is no response
+                            # to extract from and the transport error is already
+                            # counted. Skip the rest of the iteration so later
+                            # steps do not run without their variables.
+                            iteration_aborted = abort_on_extract_failure
+
+                    if iteration_aborted:
+                        break
+
                     if await _think_time_wait(think, config.think_time_jitter, stop_event):
+                        return
+
+                if iteration_aborted and not stop_event.is_set():
+                    # Pace the retry like a completed iteration, and always yield
+                    # at least once: an iteration that aborts before sending
+                    # anything would otherwise monopolise the event loop when
+                    # there is no think time.
+                    await asyncio.sleep(0)
+                    if await _think_time_wait(pace, config.think_time_jitter, stop_event):
                         return
 
     finally:

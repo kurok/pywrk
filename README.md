@@ -37,6 +37,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 ## Features
 
 - **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
+- **Scripted scenarios** (`--scenario`): multi-step flows with variable extraction and `${var}` correlation — log in, capture the token, and hit authenticated endpoints with it
 - **Five benchmarking modes:**
   - **Duration mode** (`-d`): wrk-style, run for N seconds
   - **Request-count mode** (`-n`): ab-style, send exactly N requests
@@ -237,7 +238,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--traffic-profile` | Traffic shaping profile: `sine`, `step`, `sawtooth`, `square`, `spike`, `business-hours`, or `csv:file.csv` |
 | | `--html-report` | Generate interactive Gatling-style HTML report to file |
 | | `--live` | Live TUI dashboard during benchmark (requires `pywrkr[tui]`) |
-| | `--scenario` | Path to JSON/YAML scenario file for scripted multi-step requests |
+| | `--scenario` | Path to JSON/YAML scenario file for scripted multi-step requests (supports `extract` + `${var}` correlation) |
 | | `--latency-breakdown` | Show detailed per-phase latency breakdown (DNS, TCP, TLS, TTFB, transfer) |
 | | `--threshold` / `--th` | SLO threshold (repeatable), e.g. `--threshold "p95 < 300ms"`. Exit code 2 on breach |
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
@@ -356,6 +357,94 @@ Each virtual user:
 4. Repeats until duration expires
 
 The ramp-up period gradually introduces users to avoid a thundering herd at startup.
+
+### Scripted Scenarios
+
+A scenario file (JSON or YAML) describes a multi-step flow that every virtual user replays in a loop:
+
+```bash
+pywrkr --scenario examples/scenario-correlation.json -u 100 -d 60
+```
+
+Each step takes a `path`, plus optional `method`, `headers`, `body`, `think_time`, `name`,
+`assert_status`, and `assert_body_contains`. The target host comes from the positional URL, or
+from the scenario's own `base_url` when no URL is given.
+
+#### Variable extraction & correlation
+
+Steps are not limited to replaying static requests: an `extract` block pulls values out of a
+response, and later steps reference them as `${var}`. This is what makes authenticated and
+stateful flows testable — login → capture token → call the API with it.
+
+```yaml
+name: Login and read profile
+on_extract_failure: abort_iteration   # or: continue
+on_template_error: abort_iteration    # or: keep_literal
+steps:
+  - name: login
+    method: POST
+    path: /auth/login
+    body: '{"user": "demo", "pass": "demo"}'
+    extract:
+      token:
+        json: "$.access_token"                 # JSONPath into the JSON body
+      session_id:
+        header: "X-Session-Id"                 # response header value
+      csrf:
+        regex: 'name="csrf" value="([^"]+)"'   # first capture group
+
+  - name: get-profile
+    path: /me
+    headers:
+      Authorization: "Bearer ${token}"
+      X-Session: "${session_id}"
+    assert_status: 200
+
+  - name: submit-form
+    method: POST
+    path: /form
+    body:
+      csrf: "${csrf}"
+      user_token: "${token}"
+```
+
+**Extraction sources** — a rule names exactly one of:
+
+| Source | Expression | Notes |
+|--------|-----------|-------|
+| `json` | `$.a.b[0].c` | Dotted JSONPath subset: object keys, array indices (negative allowed), and `["quoted keys"]`. Wildcards, slices, filters, and recursive descent are not supported. `$` selects the whole document. |
+| `header` | `X-Session-Id` | Response header, matched case-insensitively. |
+| `regex` | `value="([^"]+)"` | Searched against the response body; capture group 1 is used. The pattern must have at least one group. |
+
+Non-string JSON values keep their JSON spelling (`true`, not `True`); objects and arrays are
+re-serialized compactly, so a whole sub-document can be carried between steps.
+
+**Where `${var}` works:** the step `path`, header names and values, and the `body` — including
+inside nested JSON object/array bodies. Values are inserted verbatim, so URL-encode anything that
+needs it on the server side. `${...}` is the entire template language: no expressions, no logic.
+
+**Variable scope:** each virtual user has its own variable set, cleared at the start of every
+iteration. Users never see each other's tokens, and every iteration starts from the same known
+state.
+
+**Failure handling** — both options are scenario-level:
+
+| Option | Values | Behavior |
+|--------|--------|----------|
+| `on_extract_failure` | `abort_iteration` (default), `continue` | An `extract` rule that produces no value skips the rest of the iteration, or is ignored and the flow continues. |
+| `on_template_error` | `abort_iteration` (default), `keep_literal` | A `${var}` that is not bound aborts the iteration, or is sent to the server literally. |
+
+Failures are visible in three places: the `Extract Failures` / `Template Errors` counters in the
+terminal summary, the `extract_failures` / `template_errors` fields in JSON output, and the error
+distribution as distinct `ExtractFailure: ...` / `TemplateError: ...` keys naming the variable and
+the reason. Bad regexes, unsupported JSONPaths, and invalid option values are rejected when the
+scenario file loads — not mid-run.
+
+Those dedicated counters record every occurrence, but the headline `Total Errors` (and therefore
+`error_rate` thresholds) charges an iteration at most once: a 401, the extraction that failed on
+its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
+
+Working example: [`examples/scenario-correlation.json`](examples/scenario-correlation.json).
 
 ### Cache-Busting Mode
 

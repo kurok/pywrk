@@ -24,6 +24,7 @@ from pywrkr.config import (
     Threshold,
     WorkerStats,
     merge_stats,
+    parse_extract_spec,
 )
 from pywrkr.reporting import (
     evaluate_thresholds,
@@ -87,6 +88,9 @@ def _serialize_scenario_step(step: ScenarioStep) -> dict:
         "assert_body_contains": step.assert_body_contains,
         "think_time": step.think_time,
         "name": step.name,
+        # Extractors travel in their scenario-file shape ({"json": "$.token"});
+        # the worker recompiles them, so compiled regexes never cross the wire.
+        "extract": {name: {rule.source: rule.expr} for name, rule in step.extract.items()},
     }
 
 
@@ -100,6 +104,7 @@ def _deserialize_scenario_step(data: dict) -> ScenarioStep:
         assert_body_contains=data.get("assert_body_contains"),
         think_time=data.get("think_time"),
         name=data.get("name"),
+        extract=parse_extract_spec(data.get("extract"), f"Step {data.get('name') or data['path']}"),
     )
 
 
@@ -110,6 +115,8 @@ def _serialize_scenario(scenario: Scenario | None) -> dict | None:
         "name": scenario.name,
         "think_time": scenario.think_time,
         "steps": [_serialize_scenario_step(s) for s in scenario.steps],
+        "on_extract_failure": scenario.on_extract_failure,
+        "on_template_error": scenario.on_template_error,
     }
     if scenario.base_url:
         result["base_url"] = scenario.base_url
@@ -119,11 +126,14 @@ def _serialize_scenario(scenario: Scenario | None) -> dict | None:
 def _deserialize_scenario(data: dict | None) -> Scenario | None:
     if data is None:
         return None
+    defaults = Scenario()
     return Scenario(
         name=data.get("name", "Unnamed Scenario"),
         base_url=data.get("base_url"),
         think_time=data.get("think_time", 0.0),
         steps=[_deserialize_scenario_step(s) for s in data.get("steps", [])],
+        on_extract_failure=data.get("on_extract_failure", defaults.on_extract_failure),
+        on_template_error=data.get("on_template_error", defaults.on_template_error),
     )
 
 
@@ -216,6 +226,8 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "total_bytes": stats.total_bytes,
         "errors": stats.errors,
         "content_length_errors": stats.content_length_errors,
+        "extract_failures": stats.extract_failures,
+        "template_errors": stats.template_errors,
         "latencies": list(stats.latencies),
         "latencies_total_seen": getattr(stats.latencies, "total_seen", len(stats.latencies)),
         "error_types": dict(stats.error_types),
@@ -247,6 +259,8 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     ws.total_bytes = data.get("total_bytes", 0)
     ws.errors = data.get("errors", 0)
     ws.content_length_errors = data.get("content_length_errors", 0)
+    ws.extract_failures = data.get("extract_failures", 0)
+    ws.template_errors = data.get("template_errors", 0)
     lat_items = data.get("latencies", [])
     lat_seen = data.get("latencies_total_seen", len(lat_items))
     ws.latencies = ReservoirSampler.from_list(lat_items, total_seen=lat_seen)

@@ -124,6 +124,28 @@ pywrkr --scenario examples/har-import-scenario.json -u 50 -d 30 https://api.exam
 - [`har-import-urls.txt`](har-import-urls.txt) — generated URL file
 - [`har-import-scenario-with-assertions.json`](har-import-scenario-with-assertions.json) — scenario with static assets and status assertions
 
+### 8. Scripted Scenario with Correlation
+
+Replay a multi-step authenticated flow: log in, capture the token / user id / session header, then
+use them in later steps. Values extracted from one response become `${var}` in the next request's
+path, headers, or body.
+
+```bash
+# Run the login flow with 100 virtual users for 60 seconds:
+pywrkr --scenario examples/scenario-correlation.json -u 100 -d 60
+
+# The scenario carries its own base_url; override it with a positional URL:
+pywrkr --scenario examples/scenario-correlation.json -u 50 -d 30 https://staging.example.com
+```
+
+**Input file:**
+- [`scenario-correlation.json`](scenario-correlation.json) — login → profile → form → save → logout,
+  using all three extraction sources (`json`, `header`, `regex`)
+
+Extraction failures and unresolved `${var}` references show up as `Extract Failures` /
+`Template Errors` in the terminal summary, as `extract_failures` / `template_errors` in JSON output,
+and as distinct `ExtractFailure: ...` / `TemplateError: ...` keys in the error distribution.
+
 ## Other Traffic Profiles
 
 ```bash

@@ -10,6 +10,15 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
+from pywrkr.templating import (
+    EXTRACT_SOURCES,
+    ON_EXTRACT_FAILURE_CHOICES,
+    ON_TEMPLATE_ERROR_CHOICES,
+    Extractor,
+    compile_extractor,
+    is_valid_var_name,
+)
+
 if TYPE_CHECKING:
     from pywrkr.traffic_profiles import TrafficProfile
 
@@ -255,6 +264,8 @@ def merge_stats(all_stats: "list[WorkerStats]") -> "WorkerStats":
         merged.total_bytes += ws.total_bytes
         merged.errors += ws.errors
         merged.content_length_errors += ws.content_length_errors
+        merged.extract_failures += ws.extract_failures
+        merged.template_errors += ws.template_errors
         merged.rps_timeline.extend(normalize_timeline(ws.rps_timeline))
         for k, v in ws.error_types.items():
             merged.error_types[k] += v
@@ -348,6 +359,10 @@ class WorkerStats:
     )
     rps_timeline: list[tuple[float, int]] = field(default_factory=list)
     content_length_errors: int = 0
+    # Scenario correlation counters: extraction rules that produced no value,
+    # and ${var} placeholders that referenced an unbound variable.
+    extract_failures: int = 0
+    template_errors: int = 0
     step_latencies: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
     breakdowns: ReservoirSampler = field(
         default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
@@ -464,6 +479,9 @@ class ScenarioStep:
     assert_body_contains: str | None = None
     think_time: float | None = None  # per-step override
     name: str | None = None
+    # Correlation: variable name -> compiled extraction rule, applied to this
+    # step's response so later steps can reference it as ${name}.
+    extract: dict[str, Extractor] = field(default_factory=dict)
 
 
 @dataclass
@@ -474,6 +492,70 @@ class Scenario:
     base_url: str | None = None  # optional base URL for scenario steps
     think_time: float = 0.0
     steps: list[ScenarioStep] = field(default_factory=list)
+    # What to do when an extract rule yields nothing: "abort_iteration" (default)
+    # or "continue".
+    on_extract_failure: str = ON_EXTRACT_FAILURE_CHOICES[0]
+    # What to do when a ${var} references an unbound variable:
+    # "abort_iteration" (default) or "keep_literal".
+    on_template_error: str = ON_TEMPLATE_ERROR_CHOICES[0]
+
+
+def parse_extract_spec(raw: object, where: str) -> dict[str, Extractor]:
+    """Validate and compile a raw ``extract`` mapping from a scenario file.
+
+    Compiling here means a bad regex or an unsupported JSONPath is reported as
+    a scenario-file error before the benchmark starts, instead of failing once
+    per request mid-run.
+
+    Args:
+        raw: The value of the step's ``extract`` key (``None`` if absent).
+        where: Human-readable location prefix for error messages, e.g. ``"Step 3"``.
+
+    Raises:
+        ValueError: The mapping, a variable name, or an expression is invalid.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} 'extract' must be an object, got {type(raw).__name__}")
+
+    extractors: dict[str, Extractor] = {}
+    for var_name, spec in raw.items():
+        if not is_valid_var_name(var_name):
+            raise ValueError(
+                f"{where} 'extract' variable name {var_name!r} is not a valid ${{name}} "
+                f"identifier (letters, digits and underscore; must not start with a digit)"
+            )
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"{where} extract {var_name!r} must be an object like "
+                f'{{"json": "$.token"}}, got {type(spec).__name__}'
+            )
+        unknown = [k for k in spec if k not in EXTRACT_SOURCES]
+        if unknown:
+            raise ValueError(
+                f"{where} extract {var_name!r} has unknown key(s) {', '.join(map(repr, unknown))}; "
+                f"expected one of {', '.join(EXTRACT_SOURCES)}"
+            )
+        sources = [k for k in EXTRACT_SOURCES if k in spec]
+        if len(sources) != 1:
+            raise ValueError(
+                f"{where} extract {var_name!r} must specify exactly one of "
+                f"{', '.join(EXTRACT_SOURCES)}, got {len(sources)}"
+            )
+        try:
+            extractors[var_name] = compile_extractor(var_name, sources[0], spec[sources[0]])
+        except ValueError as exc:
+            raise ValueError(f"{where} extract {var_name!r}: {exc}") from None
+    return extractors
+
+
+def _parse_choice(data: dict, key: str, choices: tuple[str, ...]) -> str:
+    """Read an enum-like scenario option, defaulting to ``choices[0]``."""
+    value = data.get(key, choices[0])
+    if value not in choices:
+        raise ValueError(f"Scenario {key!r} must be one of {', '.join(choices)}, got {value!r}")
+    return value
 
 
 def load_scenario(path: str) -> Scenario:
@@ -565,6 +647,8 @@ def load_scenario(path: str) -> Scenario:
                 f"Step {i} 'think_time' must be a number or null, got {type(think_time).__name__}"
             )
 
+        extract = parse_extract_spec(step_data.get("extract"), f"Step {i}")
+
         steps.append(
             ScenarioStep(
                 path=step_data["path"],
@@ -577,6 +661,7 @@ def load_scenario(path: str) -> Scenario:
                 name=step_data.get(
                     "name", f"Step {i + 1}: {step_data.get('method', 'GET')} {step_data['path']}"
                 ),
+                extract=extract,
             )
         )
 
@@ -585,6 +670,8 @@ def load_scenario(path: str) -> Scenario:
         base_url=data.get("base_url"),
         think_time=data.get("think_time", 0.0),
         steps=steps,
+        on_extract_failure=_parse_choice(data, "on_extract_failure", ON_EXTRACT_FAILURE_CHOICES),
+        on_template_error=_parse_choice(data, "on_template_error", ON_TEMPLATE_ERROR_CHOICES),
     )
     logger.info(
         "Loaded scenario %r with %d steps from %s",
