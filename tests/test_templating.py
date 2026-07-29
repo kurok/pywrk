@@ -18,6 +18,9 @@ from pywrkr.templating import (
     TemplateError,
     apply_extractors,
     compile_extractor,
+    compile_header_extractor,
+    compile_json_extractor,
+    compile_regex_extractor,
     is_valid_var_name,
     parse_json_path,
     resolve_json_path,
@@ -205,19 +208,38 @@ class TestStringify(unittest.TestCase):
 
 class TestCompileExtractor(unittest.TestCase):
     def test_json_parses_path(self):
-        rule = compile_extractor("t", "json", "$.access_token")
+        rule = compile_json_extractor("t", "$.access_token")
+        self.assertEqual(rule.source, "json")
         self.assertEqual(rule.path, ("access_token",))
         self.assertIsNone(rule.pattern)
 
     def test_regex_compiles(self):
-        rule = compile_extractor("c", "regex", r'value="([^"]+)"')
+        rule = compile_regex_extractor("c", r'value="([^"]+)"')
+        self.assertEqual(rule.source, "regex")
         self.assertIsNotNone(rule.pattern)
         self.assertIsNone(rule.path)
 
     def test_header_needs_no_compilation(self):
-        rule = compile_extractor("s", "header", "X-Session-Id")
+        rule = compile_header_extractor("s", "X-Session-Id")
+        self.assertEqual(rule.source, "header")
         self.assertIsNone(rule.pattern)
         self.assertIsNone(rule.path)
+
+    def test_dispatch_by_source(self):
+        # parse_extract_spec is the data-driven entry point; it routes each rule
+        # to the compiler for its declared source.
+        rules = parse_extract_spec(
+            {
+                "a": {"json": "$.a"},
+                "b": {"regex": "(x)"},
+                "c": {"header": "X-H"},
+            },
+            "Step 0",
+        )
+        self.assertEqual([r.source for r in rules.values()], ["json", "regex", "header"])
+        self.assertEqual(rules["a"].path, ("a",))
+        self.assertIsNotNone(rules["b"].pattern)
+        self.assertEqual(rules["c"].expr, "X-H")
 
     def test_unknown_source(self):
         with self.assertRaises(ValueError) as ctx:
@@ -226,25 +248,25 @@ class TestCompileExtractor(unittest.TestCase):
 
     def test_empty_expression(self):
         with self.assertRaises(ValueError):
-            compile_extractor("v", "header", "  ")
+            compile_header_extractor("v", "  ")
 
     def test_non_string_expression(self):
         with self.assertRaises(ValueError):
-            compile_extractor("v", "json", 5)
+            compile_json_extractor("v", 5)
 
     def test_invalid_regex(self):
         with self.assertRaises(ValueError) as ctx:
-            compile_extractor("v", "regex", "(unclosed")
+            compile_regex_extractor("v", "(unclosed")
         self.assertIn("invalid regex", str(ctx.exception))
 
     def test_regex_without_capture_group(self):
         with self.assertRaises(ValueError) as ctx:
-            compile_extractor("v", "regex", "token=.+")
+            compile_regex_extractor("v", "token=.+")
         self.assertIn("no capture group", str(ctx.exception))
 
     def test_invalid_json_path(self):
         with self.assertRaises(ValueError):
-            compile_extractor("v", "json", "$.a[*]")
+            compile_json_extractor("v", "$.a[*]")
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +277,8 @@ class TestCompileExtractor(unittest.TestCase):
 class TestApplyExtractors(unittest.TestCase):
     def test_json_header_and_regex_together(self):
         rules = {
-            "token": compile_extractor("token", "json", "$.access_token"),
-            "session": compile_extractor("session", "header", "X-Session-Id"),
+            "token": compile_json_extractor("token", "$.access_token"),
+            "session": compile_header_extractor("session", "X-Session-Id"),
         }
         body = json.dumps({"access_token": "abc"}).encode()
         values, failures = apply_extractors(rules, body, {"X-Session-Id": "s-1"})
@@ -264,55 +286,55 @@ class TestApplyExtractors(unittest.TestCase):
         self.assertEqual(failures, [])
 
     def test_regex_first_capture_group(self):
-        rules = {"csrf": compile_extractor("csrf", "regex", r'name="csrf" value="([^"]+)"')}
+        rules = {"csrf": compile_regex_extractor("csrf", r'name="csrf" value="([^"]+)"')}
         body = b'<input name="csrf" value="tok-42">'
         values, failures = apply_extractors(rules, body, {})
         self.assertEqual(values, {"csrf": "tok-42"})
         self.assertEqual(failures, [])
 
     def test_regex_no_match(self):
-        rules = {"csrf": compile_extractor("csrf", "regex", r"value=\"([^\"]+)\"")}
+        rules = {"csrf": compile_regex_extractor("csrf", r"value=\"([^\"]+)\"")}
         values, failures = apply_extractors(rules, b"nothing here", {})
         self.assertEqual(values, {})
         self.assertEqual(len(failures), 1)
         self.assertIn("did not match", failures[0])
 
     def test_regex_optional_group_unset(self):
-        rules = {"v": compile_extractor("v", "regex", r"a(x)?b")}
+        rules = {"v": compile_regex_extractor("v", r"a(x)?b")}
         values, failures = apply_extractors(rules, b"ab", {})
         self.assertEqual(values, {})
         self.assertIn("capture group 1 is unset", failures[0])
 
     def test_missing_header(self):
-        rules = {"s": compile_extractor("s", "header", "X-Absent")}
+        rules = {"s": compile_header_extractor("s", "X-Absent")}
         values, failures = apply_extractors(rules, b"", {})
         self.assertEqual(values, {})
         self.assertIn("no header", failures[0])
 
     def test_header_without_any_headers(self):
-        rules = {"s": compile_extractor("s", "header", "X-Absent")}
+        rules = {"s": compile_header_extractor("s", "X-Absent")}
         _, failures = apply_extractors(rules, b"", None)
         self.assertIn("no header", failures[0])
 
     def test_body_not_json(self):
-        rules = {"t": compile_extractor("t", "json", "$.t")}
+        rules = {"t": compile_json_extractor("t", "$.t")}
         _, failures = apply_extractors(rules, b"<html>", {})
         self.assertIn("not valid JSON", failures[0])
 
     def test_body_not_captured(self):
-        rules = {"t": compile_extractor("t", "json", "$.t")}
+        rules = {"t": compile_json_extractor("t", "$.t")}
         _, failures = apply_extractors(rules, None, {})
         self.assertIn("not captured", failures[0])
 
     def test_null_value_is_a_failure(self):
-        rules = {"t": compile_extractor("t", "json", "$.t")}
+        rules = {"t": compile_json_extractor("t", "$.t")}
         _, failures = apply_extractors(rules, b'{"t": null}', {})
         self.assertIn("resolved to null", failures[0])
 
     def test_rules_are_independent(self):
         rules = {
-            "ok": compile_extractor("ok", "json", "$.a"),
-            "bad": compile_extractor("bad", "json", "$.missing"),
+            "ok": compile_json_extractor("ok", "$.a"),
+            "bad": compile_json_extractor("bad", "$.missing"),
         }
         values, failures = apply_extractors(rules, b'{"a": "1"}', {})
         self.assertEqual(values, {"ok": "1"})
@@ -321,9 +343,9 @@ class TestApplyExtractors(unittest.TestCase):
 
     def test_nested_and_scalar_conversion(self):
         rules = {
-            "num": compile_extractor("num", "json", "$.data.count"),
-            "obj": compile_extractor("obj", "json", "$.data"),
-            "flag": compile_extractor("flag", "json", "$.data.ok"),
+            "num": compile_json_extractor("num", "$.data.count"),
+            "obj": compile_json_extractor("obj", "$.data"),
+            "flag": compile_json_extractor("flag", "$.data.ok"),
         }
         body = json.dumps({"data": {"count": 3, "ok": True}}).encode()
         values, failures = apply_extractors(rules, body, {})
@@ -703,7 +725,7 @@ class TestCorrelationIntegration(_CorrelationServerMixin, AioHTTPTestCase):
         self.assertEqual(stats.template_errors, 0)
         # Every token presented to /me was one the server actually issued.
         self.assertTrue(self.presented)
-        self.assertTrue(set(self.presented) <= set(self.issued))
+        self.assertLessEqual(set(self.presented), set(self.issued))
         self.assertNotIn(401, stats.status_codes)
 
     async def test_header_and_regex_sources(self):
@@ -791,7 +813,7 @@ class TestCorrelationIntegration(_CorrelationServerMixin, AioHTTPTestCase):
         )
         self.assertGreater(len(self.presented), 4)
         self.assertEqual(len(self.presented), len(set(self.presented)))
-        self.assertTrue(set(self.presented) <= set(self.issued))
+        self.assertLessEqual(set(self.presented), set(self.issued))
 
     async def test_variables_reset_between_iterations(self):
         # /token-once only mints a token on its first call. With

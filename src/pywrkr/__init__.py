@@ -20,6 +20,9 @@ __all__ = [
     "TemplateError",
     "apply_extractors",
     "compile_extractor",
+    "compile_header_extractor",
+    "compile_json_extractor",
+    "compile_regex_extractor",
     "substitute",
     "substitute_structure",
     # pywrkr.traffic_profiles
@@ -158,6 +161,9 @@ from pywrkr.templating import (
     TemplateError,
     apply_extractors,
     compile_extractor,
+    compile_header_extractor,
+    compile_json_extractor,
+    compile_regex_extractor,
     substitute,
     substitute_structure,
 )

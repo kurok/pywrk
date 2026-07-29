@@ -30,6 +30,9 @@ __all__ = [
     "TemplateError",
     "apply_extractors",
     "compile_extractor",
+    "compile_header_extractor",
+    "compile_json_extractor",
+    "compile_regex_extractor",
     "is_valid_var_name",
     "parse_json_path",
     "resolve_json_path",
@@ -138,11 +141,15 @@ def substitute_structure(
 # JSONPath (dotted subset)
 # ---------------------------------------------------------------------------
 
+# One path token, in alternation order: a dotted name, a bracketed integer index
+# (negative allowed), or a bracketed quoted key. The explanatory comments sit out
+# here rather than inline: under re.VERBOSE a bracket inside a pattern comment is
+# ignored by Python but read as a character class by some regex analysers.
 _PATH_TOKEN_RE = re.compile(
     r"""
-      \.(?P<name>[^.\[\]]+)                        # .name
-    | \[(?P<index>-?\d+)\]                         # [0] or [-1]
-    | \[(?P<quote>["'])(?P<key>.*?)(?P=quote)\]    # ["quoted.key"] / ['key']
+      \.(?P<name>[^.\[\]]+)
+    | \[(?P<index>-?\d+)\]
+    | \[(?P<quote>["'])(?P<key>.*?)(?P=quote)\]
     """,
     re.VERBOSE,
 )
@@ -266,33 +273,76 @@ class Extractor:
     pattern: re.Pattern[str] | None = None  # compiled, when source == "regex"
 
 
+def _require_expression(source: str, expr: str) -> None:
+    if not isinstance(expr, str) or not expr.strip():
+        raise ValueError(f"{source} expression must be a non-empty string")
+
+
+def compile_json_extractor(var: str, expr: str) -> Extractor:
+    """Compile a rule that selects a value with a dotted JSONPath.
+
+    Raises:
+        ValueError: The expression is empty or uses unsupported JSONPath syntax.
+    """
+    _require_expression("json", expr)
+    return Extractor(var=var, source="json", expr=expr, path=parse_json_path(expr))
+
+
+def compile_regex_extractor(var: str, expr: str) -> Extractor:
+    """Compile a rule that pulls capture group 1 out of the response body.
+
+    Raises:
+        ValueError: The expression is empty, is not a valid regex, or has no
+            capture group.
+    """
+    _require_expression("regex", expr)
+    try:
+        pattern = re.compile(expr)
+    except re.error as exc:
+        raise ValueError(f"invalid regex {expr!r}: {exc}") from None
+    if pattern.groups < 1:
+        raise ValueError(
+            f"regex {expr!r} has no capture group; wrap the part to extract in parentheses"
+        )
+    return Extractor(var=var, source="regex", expr=expr, pattern=pattern)
+
+
+def compile_header_extractor(var: str, expr: str) -> Extractor:
+    """Compile a rule that reads a response header by name.
+
+    Raises:
+        ValueError: The header name is empty.
+    """
+    _require_expression("header", expr)
+    return Extractor(var=var, source="header", expr=expr)
+
+
+# One compiler per source. Keeping them separate means an expression only ever
+# reaches the parser that matches its source: a JSONPath is never handed to
+# re.compile, which a single `expr` parameter switched on `source` would imply.
+_COMPILERS = {
+    "json": compile_json_extractor,
+    "regex": compile_regex_extractor,
+    "header": compile_header_extractor,
+}
+
+
 def compile_extractor(var: str, source: str, expr: str) -> Extractor:
-    """Validate and compile a single extraction rule.
+    """Validate and compile a single extraction rule, dispatching on *source*.
+
+    Use this when the source comes from data (a scenario file, a distributed
+    payload); call the per-source compiler directly when it is known statically.
 
     Raises:
         ValueError: The source is unknown, or the expression is malformed
             (bad regex, no capture group, unsupported JSONPath, empty header).
     """
-    if source not in EXTRACT_SOURCES:
+    compiler = _COMPILERS.get(source)
+    if compiler is None:
         raise ValueError(
             f"unknown extract source {source!r}; expected one of {', '.join(EXTRACT_SOURCES)}"
         )
-    if not isinstance(expr, str) or not expr.strip():
-        raise ValueError(f"{source} expression must be a non-empty string")
-
-    if source == "json":
-        return Extractor(var=var, source=source, expr=expr, path=parse_json_path(expr))
-    if source == "regex":
-        try:
-            pattern = re.compile(expr)
-        except re.error as exc:
-            raise ValueError(f"invalid regex {expr!r}: {exc}") from None
-        if pattern.groups < 1:
-            raise ValueError(
-                f"regex {expr!r} has no capture group; wrap the part to extract in parentheses"
-            )
-        return Extractor(var=var, source=source, expr=expr, pattern=pattern)
-    return Extractor(var=var, source=source, expr=expr)
+    return compiler(var, expr)
 
 
 _JSON_CACHE_KEY = "json"
