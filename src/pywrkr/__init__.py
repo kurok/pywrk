@@ -13,6 +13,7 @@ __all__ = [
     "Scenario",
     "load_scenario",
     "parse_extract_spec",
+    "SESSION_CHOICES",
     "SSLConfig",
     # pywrkr.templating
     "Extractor",
@@ -39,6 +40,7 @@ __all__ = [
     # pywrkr.reporting
     "RICH_AVAILABLE",
     "OTEL_AVAILABLE",
+    "describe_session_mode",
     "format_bytes",
     "format_duration",
     "print_latency_histogram",
@@ -95,6 +97,7 @@ __all__ = [
 ]
 
 from pywrkr.config import (
+    SESSION_CHOICES,
     AutofindConfig,
     BenchmarkConfig,
     LatencyBreakdown,
@@ -136,6 +139,7 @@ from pywrkr.reporting import (
     build_multi_url_json,
     build_results_dict,
     compute_percentiles,
+    describe_session_mode,
     evaluate_thresholds,
     export_to_otel,
     export_to_prometheus,

@@ -138,6 +138,15 @@ def format_duration(secs: float) -> str:
     return f"{secs:.2f}s"
 
 
+def describe_session_mode(config: BenchmarkConfig) -> str:
+    """Describe how cookies are scoped for this run, for banners and summaries."""
+    if not config.session_cookies:
+        return "off (static -C cookies only)"
+    if config.scenario is not None and config.scenario.session == "fresh_per_iteration":
+        return "cookie jar per user, cleared each iteration"
+    return "cookie jar per user"
+
+
 # ---------------------------------------------------------------------------
 # Report printers
 # ---------------------------------------------------------------------------
@@ -1037,6 +1046,10 @@ def _print_console_results(
     else:
         print(f"  Connections:       {connections}", file=out)
     print(f"  Keep-Alive:        {'yes' if config.keepalive else 'no'}", file=out)
+    if config.users:
+        # Only meaningful where there are virtual users to isolate; plain
+        # connection mode has no per-user identity.
+        print(f"  Sessions:          {describe_session_mode(config)}", file=out)
     print(f"  Total Requests:    {stats.total_requests:,}", file=out)
     print(f"  Total Errors:      {stats.errors:,}", file=out)
     if stats.content_length_errors:

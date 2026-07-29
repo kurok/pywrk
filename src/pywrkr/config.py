@@ -54,6 +54,11 @@ DEFAULT_AUTOFIND_START_USERS = 10
 DEFAULT_AUTOFIND_MAX_USERS = 10000
 DEFAULT_AUTOFIND_STEP_MULTIPLIER = 2.0
 
+#: Accepted values for the scenario-level ``session`` option. ``persistent``
+#: carries a VU's cookies across iterations; ``fresh_per_iteration`` empties the
+#: jar at the top of each iteration so every pass looks like a new visitor.
+SESSION_CHOICES = ("persistent", "fresh_per_iteration")
+
 
 @dataclass
 class SSLConfig:
@@ -385,6 +390,9 @@ class BenchmarkConfig:
     keepalive: bool = True
     basic_auth: str | None = None  # "user:pass"
     cookies: list[str] = field(default_factory=list)  # ["name=value", ...]
+    # Honor Set-Cookie per virtual user (jar per VU). False installs a
+    # DummyCookieJar so only the static `cookies` header is ever sent.
+    session_cookies: bool = True
     verify_content_length: bool = False
     verbosity: int = 0
     csv_output: str | None = None  # file path for CSV percentile output
@@ -498,6 +506,10 @@ class Scenario:
     # What to do when a ${var} references an unbound variable:
     # "abort_iteration" (default) or "keep_literal".
     on_template_error: str = ON_TEMPLATE_ERROR_CHOICES[0]
+    # Cookie lifetime within a VU: "persistent" (default) keeps the jar across
+    # iterations, "fresh_per_iteration" empties it so each iteration looks like a
+    # brand-new visitor.
+    session: str = SESSION_CHOICES[0]
 
 
 def parse_extract_spec(raw: object, where: str) -> dict[str, Extractor]:
@@ -672,6 +684,7 @@ def load_scenario(path: str) -> Scenario:
         steps=steps,
         on_extract_failure=_parse_choice(data, "on_extract_failure", ON_EXTRACT_FAILURE_CHOICES),
         on_template_error=_parse_choice(data, "on_template_error", ON_TEMPLATE_ERROR_CHOICES),
+        session=_parse_choice(data, "session", SESSION_CHOICES),
     )
     logger.info(
         "Loaded scenario %r with %d steps from %s",

@@ -112,6 +112,15 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         help="Cookie 'name=value' (repeatable, ab-style)",
     )
     parser.add_argument(
+        "--no-session-cookies",
+        action="store_false",
+        dest="session_cookies",
+        default=True,
+        help="Do not honor Set-Cookie. By default each virtual user keeps its own "
+        "cookie jar, so N users look like N sessions; use this to send only the "
+        "static -C cookies (e.g. when benchmarking a cache or CDN layer).",
+    )
+    parser.add_argument(
         "-k",
         "--keepalive",
         action=argparse.BooleanOptionalAction,
@@ -850,6 +859,7 @@ def _parse_and_validate_args(
         ssl_config=ssl_config,
         basic_auth=args.basic_auth,
         cookies=args.cookies,
+        session_cookies=args.session_cookies,
         verify_content_length=args.verify_length,
         verbosity=args.verbosity,
         csv_output=args.csv,

@@ -146,6 +146,27 @@ Extraction failures and unresolved `${var}` references show up as `Extract Failu
 `Template Errors` in the terminal summary, as `extract_failures` / `template_errors` in JSON output,
 and as distinct `ExtractFailure: ...` / `TemplateError: ...` keys in the error distribution.
 
+### 9. Cookie-Session Login (per-user sessions)
+
+No token juggling required: the server sets a session cookie on login and each virtual user keeps
+its own jar, so the rest of the flow is authenticated automatically. Only the CSRF token — which
+lives in the HTML, not a cookie — needs extracting.
+
+```bash
+# 100 users each logging in as their own session
+pywrkr --scenario examples/scenario-cookie-session.json -u 100 -d 60
+
+# Every iteration as a brand-new visitor: add "session": "fresh_per_iteration" to the file
+# Ignore Set-Cookie entirely (e.g. benchmarking a CDN, where per-user cookies fragment the cache):
+pywrkr --scenario examples/scenario-cookie-session.json -u 100 -d 60 --no-session-cookies
+```
+
+**Input file:**
+- [`scenario-cookie-session.json`](scenario-cookie-session.json) — CSRF extract → form login → two
+  authenticated pages → logout
+
+Static `-C` cookies are always sent on top of the jar, in every mode.
+
 ## Other Traffic Profiles
 
 ```bash
