@@ -435,6 +435,10 @@ def build_results_dict(
         "transfer_per_sec_bytes": round(transfer_rate, 2),
         "total_bytes": stats.total_bytes,
         "content_length_errors": stats.content_length_errors,
+        # Scenario correlation counters (always present so CI consumers can rely
+        # on the key; 0 for non-scenario runs).
+        "extract_failures": stats.extract_failures,
+        "template_errors": stats.template_errors,
         "status_codes": dict(stats.status_codes),
         "error_types": dict(stats.error_types),
         # Throughput timeline as [seconds_from_start, requests_in_interval] pairs.
@@ -1037,6 +1041,10 @@ def _print_console_results(
     print(f"  Total Errors:      {stats.errors:,}", file=out)
     if stats.content_length_errors:
         print(f"  Content-Len Errs:  {stats.content_length_errors:,}", file=out)
+    if stats.extract_failures:
+        print(f"  Extract Failures:  {stats.extract_failures:,}", file=out)
+    if stats.template_errors:
+        print(f"  Template Errors:   {stats.template_errors:,}", file=out)
     print(f"  Requests/sec:      {rps:,.2f}", file=out)
     if config.rate is not None:
         print(f"  Target RPS:        {config.rate:,.2f}", file=out)

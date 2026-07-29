@@ -12,7 +12,16 @@ __all__ = [
     "ScenarioStep",
     "Scenario",
     "load_scenario",
+    "parse_extract_spec",
     "SSLConfig",
+    # pywrkr.templating
+    "Extractor",
+    "ExtractError",
+    "TemplateError",
+    "apply_extractors",
+    "compile_extractor",
+    "substitute",
+    "substitute_structure",
     # pywrkr.traffic_profiles
     "TrafficProfile",
     "SineProfile",
@@ -95,6 +104,7 @@ from pywrkr.config import (
     WorkerStats,
     load_scenario,
     merge_stats,
+    parse_extract_spec,
 )
 from pywrkr.distributed import (
     merge_worker_stats,
@@ -141,6 +151,15 @@ from pywrkr.reporting import (
     write_csv_output,
     write_html_report,
     write_json_output,
+)
+from pywrkr.templating import (
+    ExtractError,
+    Extractor,
+    TemplateError,
+    apply_extractors,
+    compile_extractor,
+    substitute,
+    substitute_structure,
 )
 from pywrkr.traffic_profiles import (
     BusinessHoursProfile,

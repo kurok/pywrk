@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scenario correlation**: scenario steps take an `extract` block that binds response values to variables (`json` JSONPath, `regex` capture group, or response `header`), and later steps reference them as `${var}` in the path, header names/values, and body — including inside nested JSON bodies. Variables are scoped per virtual user and cleared at the start of every iteration, so authenticated flows (login → token → API call) are now testable without cross-user leakage. (#185)
+- Scenario-level `on_extract_failure` (`abort_iteration` | `continue`) and `on_template_error` (`abort_iteration` | `keep_literal`) control what happens when a rule yields nothing or a `${var}` is unbound. Failures surface as `extract_failures` / `template_errors` in JSON output, as `Extract Failures` / `Template Errors` in the terminal summary, and as distinct `ExtractFailure: ...` / `TemplateError: ...` keys in the error distribution. (#185)
+- New `pywrkr.templating` module with the substitution engine, the in-house dotted JSONPath subset, and the extractor compiler — exported from the package root (`substitute`, `apply_extractors`, `compile_extractor`, `Extractor`, `TemplateError`, `ExtractError`). Regexes and JSONPaths are compiled when the scenario file loads, so typos are reported as validation errors rather than per-request failures. No new runtime dependencies. (#185)
+
 ## [1.5.5] - 2026-07-29
 
 ### Security
