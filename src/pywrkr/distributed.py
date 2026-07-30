@@ -26,6 +26,12 @@ from pywrkr.config import (
     merge_stats,
     parse_extract_spec,
 )
+from pywrkr.feeders import (
+    CONSUMING_STRATEGIES,
+    FEEDER_STRATEGIES,
+    Feeder,
+    shard_rows,
+)
 from pywrkr.reporting import (
     evaluate_thresholds,
     print_results,
@@ -118,6 +124,16 @@ def _serialize_scenario(scenario: Scenario | None) -> dict | None:
         "on_extract_failure": scenario.on_extract_failure,
         "on_template_error": scenario.on_template_error,
         "session": scenario.session,
+        # Rows travel with the config; see _shard_config_feeders for how they are
+        # split so a consuming strategy stays globally unique across nodes.
+        "data": {
+            name: {
+                "strategy": feeder.strategy,
+                "source": feeder.source,
+                "rows": [dict(row) for row in feeder.rows],
+            }
+            for name, feeder in scenario.data.items()
+        },
     }
     if scenario.base_url:
         result["base_url"] = scenario.base_url
@@ -136,7 +152,47 @@ def _deserialize_scenario(data: dict | None) -> Scenario | None:
         on_extract_failure=data.get("on_extract_failure", defaults.on_extract_failure),
         on_template_error=data.get("on_template_error", defaults.on_template_error),
         session=data.get("session", defaults.session),
+        data={
+            name: Feeder(
+                name=name,
+                strategy=spec.get("strategy", FEEDER_STRATEGIES[0]),
+                rows=tuple(spec.get("rows", [])),
+                source=spec.get("source", ""),
+            )
+            for name, spec in (data.get("data") or {}).items()
+        },
     )
+
+
+def _shard_config_feeders(config_data: dict, index: int, count: int) -> dict:
+    """Return *config_data* with this node's slice of the consuming data sets.
+
+    ``unique`` and ``sequential`` promise a row is used at most once for the
+    whole run, which a per-node cursor cannot enforce on its own — every node
+    would start at row 0. Handing each node a disjoint contiguous range makes the
+    promise hold across the cluster. ``loop`` and ``random`` reuse rows by
+    design, so they are sent whole.
+    """
+    scenario = config_data.get("scenario")
+    if not scenario or not scenario.get("data") or count <= 1:
+        return config_data
+
+    sharded = {}
+    for name, spec in scenario["data"].items():
+        if spec.get("strategy") not in CONSUMING_STRATEGIES:
+            sharded[name] = spec
+            continue
+        rows = list(shard_rows(tuple(spec.get("rows", [])), index, count))
+        sharded[name] = {**spec, "rows": rows}
+        logger.debug(
+            "Master: data set %r -> worker %d gets %d of %d rows",
+            name,
+            index,
+            len(rows),
+            len(spec.get("rows", [])),
+        )
+
+    return {**config_data, "scenario": {**scenario, "data": sharded}}
 
 
 def _serialize_config(config: BenchmarkConfig) -> dict:
@@ -451,8 +507,14 @@ async def run_master(
 
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
-        for _, writer in selected:
-            await _send_msg(writer, {"type": "config", "config": config_data})
+        for shard_index, (_, writer) in enumerate(selected):
+            await _send_msg(
+                writer,
+                {
+                    "type": "config",
+                    "config": _shard_config_feeders(config_data, shard_index, expect_workers),
+                },
+            )
 
         logger.info("Master: benchmark running on all workers...")
 

@@ -20,6 +20,7 @@ from pywrkr.templating import (
 )
 
 if TYPE_CHECKING:
+    from pywrkr.feeders import Feeder
     from pywrkr.traffic_profiles import TrafficProfile
 
 logger = logging.getLogger(__name__)
@@ -510,6 +511,9 @@ class Scenario:
     # iterations, "fresh_per_iteration" empties it so each iteration looks like a
     # brand-new visitor.
     session: str = SESSION_CHOICES[0]
+    # Named data sets feeding ${name.field}; each user draws one row per set per
+    # iteration.
+    data: "dict[str, Feeder]" = field(default_factory=dict)
 
 
 def parse_extract_spec(raw: object, where: str) -> dict[str, Extractor]:
@@ -568,6 +572,137 @@ def _parse_choice(data: dict, key: str, choices: tuple[str, ...]) -> str:
     if value not in choices:
         raise ValueError(f"Scenario {key!r} must be one of {', '.join(choices)}, got {value!r}")
     return value
+
+
+def parse_data_spec(raw: object, base_dir: str) -> "dict[str, Feeder]":
+    """Load the scenario's ``data`` block into feeders.
+
+    Each entry names a data set and gives its ``file`` plus an optional
+    ``strategy``. Relative paths resolve against the scenario file's own
+    directory, so a scenario and its CSV can be moved together.
+
+    Raises:
+        ValueError: The block, an entry, or a data file is malformed. Files are
+            read here so a missing or broken one is a startup error.
+    """
+    from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Scenario 'data' must be an object, got {type(raw).__name__}")
+
+    feeders: dict[str, Feeder] = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"Scenario data {name!r} must be an object like "
+                f'{{"file": "users.csv", "strategy": "unique"}}, got {type(spec).__name__}'
+            )
+        unknown = [k for k in spec if k not in ("file", "strategy")]
+        if unknown:
+            raise ValueError(
+                f"Scenario data {name!r} has unknown key(s) {', '.join(map(repr, unknown))}; "
+                f"expected 'file' and optional 'strategy'"
+            )
+        file_path = spec.get("file")
+        if not isinstance(file_path, str) or not file_path.strip():
+            raise ValueError(f"Scenario data {name!r} needs a 'file' path")
+        strategy = spec.get("strategy", FEEDER_STRATEGIES[0])
+        if not isinstance(strategy, str):
+            raise ValueError(
+                f"Scenario data {name!r} 'strategy' must be a string, got {type(strategy).__name__}"
+            )
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(base_dir, file_path)
+        feeders[name] = load_feeder(name, file_path, strategy)
+    return feeders
+
+
+def _validate_step_templates(
+    steps: "list[ScenarioStep]",
+    feeders: "dict[str, Feeder]",
+    strict_datasets: bool = True,
+) -> None:
+    """Check every placeholder in the scenario before the run starts.
+
+    Function calls and ``${dataset.field}`` references can be verified without
+    sending a request, so a typo becomes a startup error naming the step instead
+    of a template failure repeated once per iteration. Plain ``${var}``
+    references are left alone — those are bound by ``extract`` at runtime.
+
+    *strict_datasets* is False while the scenario file is loading, because
+    ``--data`` may still supply a set the file does not declare; the full check
+    runs again from :func:`validate_scenario_templates` once the CLI has merged.
+
+    Raises:
+        ValueError: A placeholder names an unknown function, a field the data
+            file does not have, or (when *strict_datasets*) an undeclared data
+            set.
+    """
+    from pywrkr.templating import iter_placeholders, validate_function_call
+
+    def check(text: str, where: str) -> None:
+        for match in iter_placeholders(text):
+            func = match.group("func")
+            if func is not None:
+                try:
+                    validate_function_call(func, match.group("args"))
+                except ValueError as exc:
+                    raise ValueError(f"{where}: {exc}") from None
+                continue
+            dataset = match.group("dataset")
+            if dataset is None:
+                continue
+            field_name = match.group("field")
+            feeder = feeders.get(dataset)
+            if feeder is None:
+                if not strict_datasets:
+                    continue
+                declared = ", ".join(sorted(feeders)) or "none"
+                raise ValueError(
+                    f"{where}: ${{{dataset}.{field_name}}} references data set {dataset!r}, "
+                    f"which is not declared by the scenario's 'data' block or --data "
+                    f"(declared: {declared})"
+                )
+            if field_name not in feeder.fields:
+                raise ValueError(
+                    f"{where}: data set {dataset!r} has no field {field_name!r} "
+                    f"(available: {', '.join(feeder.fields)})"
+                )
+
+    def walk(value: object, where: str) -> None:
+        if isinstance(value, str):
+            check(value, where)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    check(key, where)
+                walk(item, where)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, where)
+
+    for i, step in enumerate(steps):
+        where = f"Step {i} ({step.name or step.path})"
+        check(step.path, where)
+        for header_name, header_value in step.headers.items():
+            check(header_name, where)
+            check(header_value, where)
+        walk(step.body, where)
+
+
+def validate_scenario_templates(scenario: "Scenario") -> None:
+    """Re-check a scenario's placeholders once its data sets are final.
+
+    Call after merging ``--data`` into a loaded scenario: only then is it known
+    whether a ``${dataset.field}`` reference is genuinely undeclared.
+
+    Raises:
+        ValueError: A placeholder names an unknown function, an undeclared data
+            set, or a field its data file does not have.
+    """
+    _validate_step_templates(scenario.steps, scenario.data, strict_datasets=True)
 
 
 def load_scenario(path: str) -> Scenario:
@@ -677,6 +812,10 @@ def load_scenario(path: str) -> Scenario:
             )
         )
 
+    feeders = parse_data_spec(data.get("data"), os.path.dirname(os.path.abspath(path)))
+    # Not strict about unknown data sets yet: --data may still supply one.
+    _validate_step_templates(steps, feeders, strict_datasets=False)
+
     scenario = Scenario(
         name=data.get("name", "Unnamed Scenario"),
         base_url=data.get("base_url"),
@@ -685,6 +824,7 @@ def load_scenario(path: str) -> Scenario:
         on_extract_failure=_parse_choice(data, "on_extract_failure", ON_EXTRACT_FAILURE_CHOICES),
         on_template_error=_parse_choice(data, "on_template_error", ON_TEMPLATE_ERROR_CHOICES),
         session=_parse_choice(data, "session", SESSION_CHOICES),
+        data=feeders,
     )
     logger.info(
         "Loaded scenario %r with %d steps from %s",

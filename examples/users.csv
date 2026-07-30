@@ -1,0 +1,6 @@
+username,password,plan,region
+alice,s3cret-a,pro,us-east
+bob,s3cret-b,free,eu-west
+carol,s3cret-c,pro,ap-south
+dave,s3cret-d,free,us-west
+erin,s3cret-e,enterprise,eu-central
