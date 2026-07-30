@@ -729,7 +729,24 @@ class TestBaselineGateIntegration(AioHTTPTestCase):
             url=f"http://127.0.0.1:{self.server.port}/", **{**defaults, **kwargs}
         )
 
-    async def test_save_then_compare_detects_the_shift(self):
+    def _write_fast_baseline(self, path, p95_seconds=0.001):
+        """Write a baseline with a known-fast p95, built the way a real run would.
+
+        Measuring the baseline too made this test depend on two noisy numbers
+        instead of one: a contended runner could produce a baseline p95 large
+        enough to swallow the injected shift, which is exactly how it flaked.
+        Pinning the baseline leaves only the current run's latency to observe,
+        and the injected delay dwarfs any plausible jitter.
+        """
+        stats = pywrkr.WorkerStats()
+        for _ in range(100):
+            stats.total_requests += 1
+            stats.status_codes[200] += 1
+            stats.latencies.append(p95_seconds)
+        results = pywrkr.build_results_dict(stats, 1.0, 4, self._config())
+        pywrkr.write_json_output(path, results)
+
+    async def test_save_baseline_writes_a_comparable_file(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         baseline_path = os.path.join(tmp.name, "baseline.json")
@@ -738,9 +755,21 @@ class TestBaselineGateIntegration(AioHTTPTestCase):
             _, code = await pywrkr.run_benchmark(self._config(save_baseline=baseline_path))
         self.assertEqual(code, 0)
         self.assertTrue(os.path.isfile(baseline_path))
+        # What was written is a valid baseline for a later comparison.
+        saved = load_results(baseline_path)
+        self.assertEqual(saved["schema_version"], SCHEMA_VERSION)
+        self.assertGreater(saved["total_requests"], 0)
+        self.assertEqual(compare_results(saved, saved).config_warnings, [])
 
-        # Same server, now noticeably slower.
-        self.delay = 0.02
+    async def test_injected_latency_trips_the_gate(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        baseline_path = os.path.join(tmp.name, "baseline.json")
+        self._write_fast_baseline(baseline_path)
+
+        # 100ms against a 1ms baseline is a ~100x shift: no amount of CI jitter
+        # turns that into "within +50%".
+        self.delay = 0.1
         out = StringIO()
         with patch("sys.stdout", out):
             _, code = await pywrkr.run_benchmark(
@@ -749,20 +778,22 @@ class TestBaselineGateIntegration(AioHTTPTestCase):
         self.assertEqual(code, EXIT_REGRESSION)
         self.assertIn("REGRESSION", out.getvalue())
 
-    async def test_no_shift_passes(self):
+    async def test_no_regression_passes(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         baseline_path = os.path.join(tmp.name, "baseline.json")
+        # A deliberately slow baseline, so the live run can only look better.
+        # Comparing two measured runs would make the assertion depend on which
+        # of them the runner happened to starve.
+        self._write_fast_baseline(baseline_path, p95_seconds=0.5)
 
-        with patch("sys.stdout", new_callable=StringIO):
-            await pywrkr.run_benchmark(self._config(save_baseline=baseline_path))
         out = StringIO()
         with patch("sys.stdout", out):
             _, code = await pywrkr.run_benchmark(
-                # A budget wide enough to absorb loopback jitter.
-                self._config(baseline=baseline_path, fail_on=[parse_fail_on("p95 > +5000%")])
+                self._config(baseline=baseline_path, fail_on=[parse_fail_on("p95 > +50%")])
             )
         self.assertEqual(code, 0)
+        self.assertIn("OK:", out.getvalue())
         self.assertIn("OK:", out.getvalue())
 
     async def test_missing_baseline_exits_1(self):
@@ -781,11 +812,9 @@ class TestBaselineGateIntegration(AioHTTPTestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         baseline_path = os.path.join(tmp.name, "baseline.json")
+        self._write_fast_baseline(baseline_path)
 
-        with patch("sys.stdout", new_callable=StringIO):
-            await pywrkr.run_benchmark(self._config(save_baseline=baseline_path))
-
-        self.delay = 0.02
+        self.delay = 0.1
         with patch("sys.stdout", new_callable=StringIO):
             _, code = await pywrkr.run_benchmark(
                 self._config(
