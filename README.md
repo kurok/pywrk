@@ -720,28 +720,87 @@ pywrkr compare 'baselines/*.json' current.json --fail-on "p95 > +10%"
 A recommended recipe: run 3–5 repetitions, discard the first as warm-up, and keep the rest as the
 baseline set.
 
-#### GitHub Actions
+#### GitHub Action
 
 ```yaml
-- name: Performance gate
-  run: |
-    pip install pywrkr
-    # Warm-up run, discarded
-    pywrkr -c 50 -d 10 http://localhost:8080/ > /dev/null
-    # Measured run, gated against the committed baseline
-    pywrkr --baseline perf/baseline.json \
-           --fail-on "p95 > +10%" \
-           --fail-on "rps < -5%" \
-           --compare-format markdown \
-           -c 50 -d 30 http://localhost:8080/ | tee perf-report.md
-- name: Comment on the PR
-  if: always() && github.event_name == 'pull_request'
-  run: gh pr comment "${{ github.event.number }}" --body-file perf-report.md
-  env:
-    GH_TOKEN: ${{ github.token }}
+- uses: kurok/pywrkr@v1
+  with:
+    url: http://localhost:8080/
+    args: -c 50 -d 30
+    thresholds: |
+      p95 < 500ms
+      error_rate < 1%
+    comment-pr: true
 ```
 
-The step fails the job on exit code 3, and `perf-report.md` carries the delta table either way.
+That runs the benchmark, gates the job on the thresholds, writes the table to the job summary, and
+posts it on the PR — **editing its own previous comment instead of adding a new one**, so a branch
+with twenty pushes has one report, not twenty.
+
+Gate on a baseline instead of, or alongside, absolute thresholds:
+
+```yaml
+- uses: kurok/pywrkr@v1
+  with:
+    url: http://localhost:8080/
+    args: -c 50 -d 30
+    baseline: perf/baseline.json
+    fail-on: |
+      p95 > +10%
+      rps < -5%
+    save-baseline: perf/candidate.json
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `url` | — | Target URL. Omit only if `args` supplies its own target. |
+| `args` | `""` | Any other pywrkr flags, e.g. `-c 50 -d 30 --rate 200`. |
+| `thresholds` | `""` | Absolute gates, one per line (`p95 < 500ms`). |
+| `baseline` | `""` | Results file or glob to compare against. |
+| `fail-on` | `""` | Regression rules, one per line (`p95 > +10%`). Requires `baseline`. |
+| `save-baseline` | `""` | Also write this run's results here, to commit or cache. |
+| `version` | `latest` | Version to install, or `local` for the checked-out tree. |
+| `comment-pr` | `false` | Post/update the report on the PR. Needs `pull-requests: write`. |
+| `soft-fail` | `false` | Report a breach without failing the step. |
+| `html-report` | `""` | Also write a standalone HTML report here. |
+| `results-file` | `pywrkr-results.json` | Where the JSON results go. |
+| `summary-file` | `pywrkr-report.md` | Where the rendered markdown goes. |
+| `job-summary` | `true` | Append the report to the job summary. |
+| `title` | `pywrkr performance report` | Heading used in the report. |
+
+Outputs: `passed`, `verdict` (`pass` / `threshold` / `regression` / `error`), `p50`, `p95`, `p99`,
+`rps`, `error-rate`, `total-requests`, `results-file`, `summary-file`. Latencies are in seconds and
+`error-rate` is a percentage; a metric the run did not produce comes back as an empty string, so a
+downstream step can tell "no data" from "zero".
+
+```yaml
+- uses: kurok/pywrkr@v1
+  id: perf
+  with: { url: http://localhost:8080/, args: -c 50 -d 30, soft-fail: "true" }
+- run: echo "p95 was ${{ steps.perf.outputs.p95 }}s at ${{ steps.perf.outputs.rps }} req/s"
+```
+
+Two behaviours worth knowing about:
+
+- **A threshold on a metric the run never produced fails.** If the target was unreachable there is
+  no p95, and a gate that goes green because it found nothing to check is worse than no gate.
+- **The action depends on no other action.** It installs pywrkr into a private venv using the
+  runner's own Python; there is no `uses:` inside it, so adopting it does not pull anything else
+  into your supply chain. Every input reaches the shell through the environment rather than being
+  interpolated into a script, so an input from an untrusted fork cannot inject commands.
+
+If you would rather wire it up by hand, `pywrkr summary` is the same code the action calls:
+
+```bash
+pywrkr -c 50 -d 30 --json results.json http://localhost:8080/
+pywrkr summary results.json \
+       --threshold "p95 < 500ms" \
+       --baseline perf/baseline.json --fail-on "p95 > +10%" \
+       --output report.md --github-output "$GITHUB_OUTPUT"
+```
+
+It re-reads the results file rather than re-running anything, and exits `0` / `2` / `3` on the same
+rules as the main command.
 
 ### Data-Driven Testing
 

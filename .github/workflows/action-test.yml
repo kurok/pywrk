@@ -1,0 +1,151 @@
+name: Action
+
+# Dogfooding for ./action.yml. An action that is only ever exercised by its
+# consumers ships broken; this runs it against a local target on every change
+# to the action or to the code it calls, and checks all three verdicts --
+# including that the gate actually fails when a threshold is breached.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - action.yml
+      - action/**
+      - src/pywrkr/ci.py
+      - src/pywrkr/main.py
+      - .github/workflows/action-test.yml
+  pull_request:
+    paths:
+      - action.yml
+      - action/**
+      - src/pywrkr/ci.py
+      - src/pywrkr/main.py
+      - .github/workflows/action-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  dogfood:
+    name: Run the action against a local target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start a local target
+        run: |
+          set -euo pipefail
+          # Its own venv: the runner's system Python may be externally managed.
+          python3 -m venv "${RUNNER_TEMP}/target-venv"
+          "${RUNNER_TEMP}/target-venv/bin/pip" install --quiet aiohttp
+          "${RUNNER_TEMP}/target-venv/bin/python" action/local_server.py --port 8123 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8123/ >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8123/
+
+      # 1. The happy path: thresholds that hold, and a baseline written for step 3.
+      - name: Benchmark within thresholds
+        id: green
+        uses: ./
+        with:
+          url: http://127.0.0.1:8123/
+          args: -d 5 -c 20
+          version: local
+          thresholds: |
+            p95 < 2s
+            error_rate < 5%
+          save-baseline: baseline.json
+          results-file: green.json
+          summary-file: green.md
+
+      - name: Check the passing run reported itself correctly
+        env:
+          PASSED: ${{ steps.green.outputs.passed }}
+          VERDICT: ${{ steps.green.outputs.verdict }}
+          RPS: ${{ steps.green.outputs.rps }}
+          TOTAL: ${{ steps.green.outputs.total-requests }}
+        run: |
+          set -euo pipefail
+          test "$PASSED" = "true"
+          test "$VERDICT" = "pass"
+          # A benchmark that measured nothing must not read as a green gate.
+          awk 'BEGIN { exit !(ARGV[1] + 0 > 0) }' "$RPS"
+          test "$TOTAL" -gt 0
+          test -s green.json
+          test -s baseline.json
+          grep -q '^## pywrkr performance report' green.md
+          grep -q 'Passed' green.md
+
+      # 2. The gate must fail on a breach. soft-fail keeps the job green so the
+      #    assertion below can inspect the verdict rather than the job dying.
+      - name: Benchmark against an impossible threshold
+        id: red
+        uses: ./
+        with:
+          url: http://127.0.0.1:8123/
+          args: -d 3 -c 10
+          version: local
+          thresholds: |
+            p95 < 1us
+          soft-fail: "true"
+          results-file: red.json
+          summary-file: red.md
+          job-summary: "false"
+
+      - name: Check the breach was reported as a failure
+        env:
+          PASSED: ${{ steps.red.outputs.passed }}
+          VERDICT: ${{ steps.red.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          test "$PASSED" = "false"
+          test "$VERDICT" = "threshold"
+          grep -q 'Failed' red.md
+
+      # 3. A baseline comparison against the run from step 1.
+      - name: Compare against the baseline
+        id: compare
+        uses: ./
+        with:
+          url: http://127.0.0.1:8123/
+          args: -d 3 -c 20
+          version: local
+          baseline: baseline.json
+          fail-on: |
+            p95 > +500%
+          soft-fail: "true"
+          results-file: compare.json
+          summary-file: compare.md
+          job-summary: "false"
+
+      - name: Check the comparison rendered
+        run: |
+          set -euo pipefail
+          grep -q '### Compared to baseline' compare.md
+          grep -q 'Baseline: `baseline.json`' compare.md
+
+      # 4. A target that is not there must never come back green.
+      - name: Benchmark an unreachable target
+        id: unreachable
+        continue-on-error: true
+        uses: ./
+        with:
+          url: http://127.0.0.1:9/
+          args: -d 2 -c 4
+          version: local
+          thresholds: |
+            error_rate < 1%
+          results-file: unreachable.json
+          summary-file: unreachable.md
+          job-summary: "false"
+
+      - name: Check the unreachable target failed the step
+        env:
+          OUTCOME: ${{ steps.unreachable.outcome }}
+          VERDICT: ${{ steps.unreachable.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = "failure"
+          test "$VERDICT" = "threshold"

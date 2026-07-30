@@ -17,9 +17,11 @@ import os
 import sys
 from urllib.parse import urlparse
 
+from pywrkr import ci
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import (
     COMPARE_FORMATS,
+    EXIT_REGRESSION,
     EXIT_USAGE,
     ResultsError,
     compare_results,
@@ -668,6 +670,116 @@ def _run_compare(args: argparse.Namespace) -> None:
         )
         sys.exit(EXIT_USAGE)
     sys.exit(report.exit_code)
+
+
+def _build_summary_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the `summary` subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="pywrkr summary",
+        description="Render a CI job summary / PR comment from a --json results file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  pywrkr summary results.json
+  pywrkr summary results.json --threshold 'p95 < 500ms' --threshold 'error_rate < 1%%'
+  pywrkr summary results.json --baseline .perf/baseline.json --fail-on 'p95 > +10%%'
+
+Exit codes: 0 = all checks passed, 2 = a threshold was breached,
+3 = a --fail-on rule fired, 1 = usage/schema error.
+""",
+    )
+    parser.add_argument("results", help="Results file written by --json")
+    parser.add_argument(
+        "--threshold",
+        "--th",
+        action="append",
+        default=[],
+        dest="thresholds",
+        metavar="EXPR",
+        help="Threshold to re-check against the results (repeatable)",
+    )
+    parser.add_argument(
+        "--baseline", default=None, metavar="FILE_OR_GLOB", help="Baseline to compare against"
+    )
+    parser.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        dest="fail_on",
+        metavar="EXPR",
+        help="Regression rule against the baseline delta (repeatable)",
+    )
+    parser.add_argument("--title", default="pywrkr performance report", help="Heading to use")
+    parser.add_argument("--target", default=None, help="Target label shown under the heading")
+    parser.add_argument(
+        "--marker",
+        action="store_true",
+        default=False,
+        help="Prepend the hidden marker the GitHub Action uses to edit its own comment",
+    )
+    parser.add_argument("-o", "--output", default=None, metavar="FILE", help="Write here")
+    parser.add_argument(
+        "--github-output",
+        default=None,
+        metavar="FILE",
+        help="Append key=value action outputs to this file (usually $GITHUB_OUTPUT)",
+    )
+    return parser
+
+
+def _run_summary(args: argparse.Namespace) -> None:
+    """Execute the summary subcommand."""
+    try:
+        results = ci.load_results(args.results)
+    except (OSError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    try:
+        thresholds = [parse_threshold(expr) for expr in args.thresholds]
+        rules = [parse_fail_on(expr) for expr in args.fail_on]
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    if rules and not args.baseline:
+        print("Error: --fail-on requires --baseline", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    comparison = None
+    if args.baseline:
+        try:
+            baseline, sources = load_baseline(args.baseline)
+        except ResultsError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+        comparison = compare_results(baseline, results, rules, sources)
+
+    outcomes = ci.evaluate_from_results(results, thresholds)
+    markdown = ci.render_markdown(
+        results,
+        outcomes,
+        comparison,
+        title=args.title,
+        target=args.target,
+        include_marker=args.marker,
+    )
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(markdown)
+    else:
+        print(markdown, end="")
+
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as handle:
+            for key, value in ci.summary_outputs(results, outcomes).items():
+                handle.write(f"{key}={value}\n")
+
+    if any(not outcome.passed for outcome in outcomes):
+        sys.exit(2)
+    if comparison is not None and comparison.regressed:
+        sys.exit(EXIT_REGRESSION)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1333,6 +1445,10 @@ def main() -> None:
 
     if len(sys.argv) > 1 and sys.argv[1] == "compare":
         _run_compare(_build_compare_parser().parse_args(sys.argv[2:]))
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "summary":
+        _run_summary(_build_summary_parser().parse_args(sys.argv[2:]))
         return
 
     parser = _build_parser()

@@ -418,14 +418,14 @@ class TestRateLimiterEdgeCases:
 class TestReportingEdgeCases:
     def test_compare_ge_operator(self):
         """Line 246-248: >= and fallback operators."""
-        from pywrkr.reporting import _compare
+        from pywrkr.reporting import compare_threshold
 
-        assert _compare(10.0, ">=", 10.0) is True
-        assert _compare(9.0, ">=", 10.0) is False
-        assert _compare(10.0, "<=", 10.0) is True
-        assert _compare(11.0, "<=", 10.0) is False
+        assert compare_threshold(10.0, ">=", 10.0) is True
+        assert compare_threshold(9.0, ">=", 10.0) is False
+        assert compare_threshold(10.0, "<=", 10.0) is True
+        assert compare_threshold(11.0, "<=", 10.0) is False
         # Unknown operator returns False
-        assert _compare(10.0, "==", 10.0) is False
+        assert compare_threshold(10.0, "==", 10.0) is False
 
     def test_print_percentiles_empty(self):
         """Line 284: empty latencies produce no output."""
