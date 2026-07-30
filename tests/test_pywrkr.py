@@ -2460,7 +2460,11 @@ class TestScenarioIntegration(AioHTTPTestCase):
             with patch("sys.stdout", buf):
                 stats, _ = await pywrkr.run_user_simulation(config)
             output = buf.getvalue()
-            self.assertIn("PER-STEP LATENCY", output)
+            # The section carries errors and throughput alongside latency now,
+            # hence the rename from "PER-STEP LATENCY".
+            self.assertIn("PER-STEP BREAKDOWN", output)
+            for column in ("Step", "Count", "Errors", "Req/s", "p50", "p95", "p99", "Max"):
+                self.assertIn(column, output)
             self.assertIn("Home", output)
             self.assertIn("Dash", output)
         finally:

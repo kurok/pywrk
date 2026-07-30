@@ -313,6 +313,7 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "rps_timeline": stats.rps_timeline,
         # Previously missing:
         "step_latencies": {k: v for k, v in stats.step_latencies.items()},
+        "step_errors": dict(stats.step_errors),
         "breakdowns": [
             {
                 "dns": b.dns,
@@ -352,6 +353,8 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     # Previously missing:
     for k, v in data.get("step_latencies", {}).items():
         ws.step_latencies[k] = v
+    for k, v in data.get("step_errors", {}).items():
+        ws.step_errors[k] = v
     bd_items = []
     for b in data.get("breakdowns", []):
         bd_items.append(

@@ -14,7 +14,18 @@
       "path": "/users/42",
       "method": "GET",
       "assert_status": 200,
-      "think_time": 0.08
+      "think_time": 0.08,
+      "assert_body_contains": "id",
+      "assert_json": {
+        "$.id": "*",
+        "$.name": "*"
+      },
+      "assert_header": {
+        "Content-Type": {
+          "regex": "^application/json"
+        }
+      },
+      "assert_max_latency": "500ms"
     },
     {
       "name": "POST /users",
@@ -28,7 +39,9 @@
         "email": "alice@example.com"
       },
       "assert_status": 201,
-      "think_time": 0.21
+      "think_time": 0.21,
+      "assert_body_regex": "\"(id|status)\"",
+      "assert_max_latency": "1s"
     },
     {
       "name": "GET /styles/main.css",

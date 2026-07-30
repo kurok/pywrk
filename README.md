@@ -383,6 +383,67 @@ Each step takes a `path`, plus optional `method`, `headers`, `body`, `think_time
 `assert_status`, and `assert_body_contains`. The target host comes from the positional URL, or
 from the scenario's own `base_url` when no URL is given.
 
+#### Step assertions
+
+`assert_status` alone lets a load test pass while the API returns well-formed garbage. Each step
+can check what actually makes a response correct:
+
+```yaml
+steps:
+  - name: get-user
+    path: /users/42
+    assert_status: 200
+    assert_body_contains: "email"
+    assert_body_regex: '"id":\s*42'
+    assert_json:
+      "$.id": 42          # must equal
+      "$.email": "*"      # must exist, any value
+    assert_header:
+      X-Trace: "abc123"                    # exact match
+      Content-Type: {regex: "^application/json"}   # or a regex
+    assert_max_latency: 500ms
+```
+
+| Assertion | Checks |
+|-----------|--------|
+| `assert_status` | Exact status code |
+| `assert_body_contains` | Substring is present in the body |
+| `assert_body_regex` | Regex matches somewhere in the body |
+| `assert_json` | JSONPath → expected value, or `"*"` for "must exist" |
+| `assert_header` | Header equals a string, or matches `{regex: "..."}` |
+| `assert_max_latency` | This request took no longer than `500ms` / `1.5s` / `250us` |
+
+`assert_json` uses the same JSONPath subset as `extract`, so the two never disagree. Numbers
+compare numerically (`42` matches `42.0`), but booleans stay distinct from numbers — `true` does
+not satisfy an expected `1`.
+
+Exact `assert_header` matches are exact: a server sending `application/json; charset=utf-8` will
+*not* match `"application/json"`. Use the regex form for prefixes.
+
+A failed assertion counts the request as **one** error however many rules broke, and each broken
+rule gets its own key in the error distribution. Those keys name the *rule*, never the observed
+value — otherwise a per-request latency or payload id would mint a fresh key every time and
+overflow the breakdown. The observed value goes to the log at `-v 2`.
+
+Bad regexes, unsupported JSONPaths, and nonsense durations are rejected when the scenario file
+loads, naming the step.
+
+#### Per-step reporting
+
+Scenario runs report each step separately, because an aggregate p95 blends them: if `login` is
+40ms and `checkout` is 2s, the headline number describes neither.
+
+```
+  PER-STEP BREAKDOWN
+    Step          Count   Errors      Req/s         p50         p95         p99         Max
+    get-user         35        0       17.3    509.00us    872.00us    894.00us    894.00us
+    checkout         34       34       16.8     52.67ms     53.10ms     53.10ms     53.10ms
+```
+
+The same blocks appear under `step_stats` in `--json` (with `count`, `errors`, `requests_per_sec`,
+`min`/`max`/`mean`/`median`/`stdev` and `p50`/`p95`/`p99`) and as a table in `--html-report`. In
+distributed mode they are merged across workers like the global stats.
+
 #### Variable extraction & correlation
 
 Steps are not limited to replaying static requests: an `extract` block pulls values out of a

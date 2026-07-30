@@ -17,6 +17,14 @@ __all__ = [
     "validate_scenario_templates",
     "SESSION_CHOICES",
     "SSLConfig",
+    # pywrkr.assertions
+    "ANY_VALUE",
+    "HeaderAssertion",
+    "JsonAssertion",
+    "StepAssertions",
+    "evaluate_assertions",
+    "parse_duration",
+    "parse_step_assertions",
     # pywrkr.backends
     "AiohttpBackend",
     "Backend",
@@ -87,6 +95,8 @@ __all__ = [
     "print_percentiles",
     "print_rps_timeline",
     "build_results_dict",
+    "build_step_stats",
+    "print_step_table",
     "write_csv_output",
     "write_json_output",
     "generate_html_report",
@@ -132,6 +142,15 @@ __all__ = [
     "__version__",
 ]
 
+from pywrkr.assertions import (
+    ANY_VALUE,
+    HeaderAssertion,
+    JsonAssertion,
+    StepAssertions,
+    evaluate_assertions,
+    parse_duration,
+    parse_step_assertions,
+)
 from pywrkr.backends import (
     AiohttpBackend,
     Backend,
@@ -211,6 +230,7 @@ from pywrkr.reporting import (
     aggregate_breakdowns,
     build_multi_url_json,
     build_results_dict,
+    build_step_stats,
     compute_percentiles,
     describe_session_mode,
     evaluate_thresholds,
@@ -227,6 +247,7 @@ from pywrkr.reporting import (
     print_percentiles,
     print_results,
     print_rps_timeline,
+    print_step_table,
     print_threshold_results,
     write_csv_output,
     write_html_report,

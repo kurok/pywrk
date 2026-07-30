@@ -442,6 +442,65 @@ def print_rps_timeline(
         print(f"    {t_start:>4}s | {bar:<{bar_max}} | {rps:>8.1f} req/s", file=file)
 
 
+def build_step_stats(stats: WorkerStats, duration: float) -> dict:
+    """Summarize each scenario step on its own.
+
+    A scenario's aggregate p95 blends every step together: if login is 40ms and
+    checkout is 2s, the headline number describes neither. This reuses the same
+    percentile machinery as the top-level block so the two never disagree.
+    """
+    step_stats: dict[str, dict] = {}
+    for step_name, lats in stats.step_latencies.items():
+        if not lats:
+            continue
+        finite = [x for x in lats if math.isfinite(x)]
+        if not finite:
+            continue
+        pct_map = dict(compute_percentiles(finite))
+        block = {
+            "count": len(finite),
+            "errors": int(stats.step_errors.get(step_name, 0)),
+            "requests_per_sec": round(len(finite) / duration, 2) if duration > 0 else 0.0,
+            "min": round(min(finite), 6),
+            "max": round(max(finite), 6),
+            "mean": round(statistics.mean(finite), 6),
+            "median": round(pct_map.get(50, statistics.median(finite)), 6),
+        }
+        for pct in (50, 95, 99):
+            if pct in pct_map:
+                block[f"p{pct}"] = round(pct_map[pct], 6)
+        if len(finite) > 1:
+            block["stdev"] = round(statistics.stdev(finite), 6)
+        step_stats[step_name] = block
+    return step_stats
+
+
+def print_step_table(step_stats: dict, file: TextIO = sys.stdout) -> None:
+    """Print the per-step table used by scenario runs."""
+    if not step_stats:
+        return
+    name_width = max(len("Step"), max(len(name) for name in step_stats))
+    header = (
+        f"    {'Step'.ljust(name_width)}  {'Count':>8}  {'Errors':>7}  "
+        f"{'Req/s':>9}  {'p50':>10}  {'p95':>10}  {'p99':>10}  {'Max':>10}"
+    )
+    print(header, file=file)
+    print(
+        f"    {'-' * name_width}  {'-' * 8}  {'-' * 7}  {'-' * 9}  " + "  ".join(["-" * 10] * 4),
+        file=file,
+    )
+    for name, block in step_stats.items():
+        print(
+            f"    {name.ljust(name_width)}  {block['count']:>8,}  {block['errors']:>7,}  "
+            f"{block['requests_per_sec']:>9,.1f}  "
+            f"{format_duration(block.get('p50', block['median'])):>10}  "
+            f"{format_duration(block.get('p95', block['max'])):>10}  "
+            f"{format_duration(block.get('p99', block['max'])):>10}  "
+            f"{format_duration(block['max']):>10}",
+            file=file,
+        )
+
+
 def _config_snapshot(config: BenchmarkConfig, connections: int) -> dict:
     """Capture the load shape a run was asked for.
 
@@ -541,19 +600,10 @@ def build_results_dict(
         result["percentiles"] = {f"p{p}": round(v, 6) for p, v in pct_pairs}
     # Per-step latency stats for scenario mode
     if stats.step_latencies:
-        step_stats = {}
-        for step_name, lats in stats.step_latencies.items():
-            if lats:
-                step_stats[step_name] = {
-                    "count": len(lats),
-                    "min": round(min(lats), 6),
-                    "max": round(max(lats), 6),
-                    "mean": round(statistics.mean(lats), 6),
-                    "median": round(statistics.median(lats), 6),
-                }
-                if len(lats) > 1:
-                    step_stats[step_name]["stdev"] = round(statistics.stdev(lats), 6)
-        result["step_stats"] = step_stats
+        # Kept under the existing "step_stats" key rather than renamed, so JSON
+        # consumers written against earlier releases keep working; the block
+        # gained errors and percentiles.
+        result["step_stats"] = build_step_stats(stats, duration)
     # Latency breakdown
     if stats.breakdowns:
         agg = aggregate_breakdowns(stats.breakdowns)
@@ -758,6 +808,34 @@ def generate_gatling_html_report(
             "  </table>\n"
             "</div>"
         )
+
+    # Per-step table, for scenario runs. Prepended to the error table so the
+    # report leads with which step is slow or failing.
+    step_stats = results.get("step_stats") or {}
+    if step_stats:
+        step_rows = "".join(
+            "<tr>"
+            f"<td>{_html_escape(name)}</td>"
+            f"<td>{block['count']:,}</td>"
+            f"<td>{block['errors']:,}</td>"
+            f"<td>{block['requests_per_sec']:,.1f}</td>"
+            f"<td>{format_duration(block.get('p50', block['median']))}</td>"
+            f"<td>{format_duration(block.get('p95', block['max']))}</td>"
+            f"<td>{format_duration(block.get('p99', block['max']))}</td>"
+            f"<td>{format_duration(block['max'])}</td>"
+            "</tr>"
+            for name, block in step_stats.items()
+        )
+        error_table_html = (
+            '<div class="chart-card full" style="margin-bottom:28px">\n'
+            "  <h3>Per-Step Breakdown</h3>\n"
+            '  <table class="errors-table">\n'
+            "    <tr><th>Step</th><th>Count</th><th>Errors</th><th>Req/s</th>"
+            "<th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr>\n"
+            f"    {step_rows}\n"
+            "  </table>\n"
+            "</div>"
+        ) + error_table_html
 
     # Build template context
     context = {
@@ -1296,19 +1374,9 @@ def _print_console_results(
     # Per-step stats (scenario mode)
     if stats.step_latencies:
         print(f"\n{'=' * 70}", file=out)
-        print("  PER-STEP LATENCY", file=out)
+        print("  PER-STEP BREAKDOWN", file=out)
         print(f"{'=' * 70}", file=out)
-        for step_name, lats in stats.step_latencies.items():
-            if lats:
-                mean_lat = statistics.mean(lats)
-                print(f"    {step_name}:", file=out)
-                print(
-                    f"      Count: {len(lats):,}  "
-                    f"Mean: {format_duration(mean_lat)}  "
-                    f"Min: {format_duration(min(lats))}  "
-                    f"Max: {format_duration(max(lats))}",
-                    file=out,
-                )
+        print_step_table(build_step_stats(stats, duration), file=out)
 
     # RPS timeline
     if stats.rps_timeline:

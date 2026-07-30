@@ -16,6 +16,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
 
+from pywrkr.assertions import StepAssertions, evaluate_assertions
 from pywrkr.backends import (
     Backend,
     BackendSession,
@@ -136,6 +137,14 @@ def _record_step_latency(stats: WorkerStats, step_name: str, latency: float) -> 
         stats.step_latencies[step_name].append(latency)
     else:
         stats.step_latencies["[other steps]"].append(latency)
+
+
+def _record_step_error(stats: WorkerStats, step_name: str) -> None:
+    """Attribute one error to a named step, obeying the same key cap."""
+    if step_name in stats.step_errors or len(stats.step_errors) < _MAX_STEP_NAMES:
+        stats.step_errors[step_name] += 1
+    else:
+        stats.step_errors["[other steps]"] += 1
 
 
 def _record_extract_failures(
@@ -507,8 +516,7 @@ async def _execute_request(
     trace_ctx: dict[str, object] | None,
     expected_length_ref: list[int | None],
     step_name: str | None = None,
-    assert_status: int | None = None,
-    assert_body_contains: str | None = None,
+    assertions: "StepAssertions | None" = None,
     log_prefix: str = "",
     capture_response: bool = False,
     transport_errors: tuple[type[BaseException], ...] = _DEFAULT_TRANSPORT_ERRORS,
@@ -575,30 +583,32 @@ async def _execute_request(
                     if declared != expected_length_ref[0]:
                         stats.content_length_errors += 1
 
-        # Assertion checks (scenario mode)
+        # Assertion checks (scenario mode). Every failed rule gets its own key
+        # in the error breakdown, but the request is only counted as one error
+        # however many of them broke.
         assertion_failed = False
-        if assert_status is not None and resp.status != assert_status:
-            stats.errors += 1
-            err_msg = f"AssertStatus: expected {assert_status}, got {resp.status}"
-            stats.error_types[err_msg] += 1
-            assertion_failed = True
-
-        if assert_body_contains is not None:
-            body_text = data.decode("utf-8", errors="replace")
-            if assert_body_contains not in body_text:
-                # Count at most one error per request: if assert_status
-                # already failed, this request is already counted. We still
-                # record the distinct AssertBody diagnostic message.
-                if not assertion_failed:
-                    stats.errors += 1
-                err_msg = f"AssertBody: '{assert_body_contains}' not found"
-                stats.error_types[err_msg] += 1
+        if assertions is not None and assertions.any:
+            failures = evaluate_assertions(assertions, resp.status, data, resp.headers, latency)
+            if failures:
+                stats.errors += 1
                 assertion_failed = True
+                for failure in failures:
+                    stats.error_types[failure.key] += 1
+                if step_name:
+                    _record_step_error(stats, step_name)
+                if config.verbosity >= 2:
+                    logger.warning(
+                        "%sassertion failed: %s",
+                        log_prefix,
+                        "; ".join(f.message for f in failures),
+                    )
 
         if not assertion_failed and resp.status >= 400:
             stats.errors += 1
             stats.error_types[f"HTTP {resp.status}"] += 1
             result.counted_error = True
+            if step_name:
+                _record_step_error(stats, step_name)
         else:
             result.counted_error = assertion_failed
 
@@ -628,6 +638,7 @@ async def _execute_request(
         stats.error_types[error_name] += 1
         stats.latencies.append(latency)
         if step_name:
+            _record_step_error(stats, step_name)
             # Go through the helper so the error path obeys the same
             # `_MAX_STEP_NAMES` cap as the success path. Appending directly
             # let a long-running benchmark with many distinct error step
@@ -1056,8 +1067,7 @@ async def scenario_worker(
                         trace_ctx,
                         expected_length_ref,
                         step_name=step_name,
-                        assert_status=step.assert_status,
-                        assert_body_contains=step.assert_body_contains,
+                        assertions=step.assertions,
                         log_prefix=f"Scenario user {user_id} step '{step_name}' ",
                         capture_response=bool(step.extract),
                         transport_errors=backend.transport_errors,
