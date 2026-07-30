@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr import workers
 from pywrkr.config import (
     BenchmarkConfig,
     SSLConfig,
@@ -348,7 +349,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
         ws = WorkerStats()
 
         # Start worker and stop it after a brief delay
-        task = asyncio.create_task(pywrkr.worker(config, ws, backend, stop_event))
+        task = asyncio.create_task(workers.worker(config, ws, backend, stop_event))
 
         await asyncio.sleep(0.5)
         stop_event.set()
@@ -376,7 +377,7 @@ class TestCancellationBehavior(AioHTTPTestCase):
         ws = WorkerStats()
 
         task = asyncio.create_task(
-            pywrkr.user_worker(0, config, ws, backend, stop_event, time.monotonic(), active_users)
+            workers.user_worker(0, config, ws, backend, stop_event, time.monotonic(), active_users)
         )
 
         await asyncio.sleep(0.5)

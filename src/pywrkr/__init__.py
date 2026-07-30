@@ -1,6 +1,31 @@
-"""pywrkr - A Python HTTP benchmarking tool inspired by wrk and Apache ab."""
+"""pywrkr - a pure-Python HTTP benchmarking tool and library.
+
+The supported library API is small and documented::
+
+    import pywrkr
+
+    result = pywrkr.run("https://api.example.com/health", connections=50, duration=30)
+    assert result.percentiles.p95 < 0.3
+
+:data:`__all__` is that public surface, and it is what the project's
+semantic-versioning promise covers: breaking changes to these names require a
+major release. Everything else in this package is an implementation detail and
+may move without notice.
+"""
 
 __all__ = [
+    # -- the public library API ------------------------------------------
+    "run",
+    "arun",
+    "Config",
+    "Result",
+    "Latency",
+    "Percentiles",
+    "ThresholdVerdict",
+    "LiveStats",
+    "load_scenario",
+    "__version__",
+    # -- established types, also covered by the versioning promise -------
     # pywrkr.config
     "RequestResult",
     "LatencyBreakdown",
@@ -110,14 +135,7 @@ __all__ = [
     "build_multi_url_json",
     "aggregate_breakdowns",
     # pywrkr.workers
-    "LiveDashboard",
-    "make_url",
     "merge_stats",
-    "create_trace_config",
-    "worker",
-    "user_worker",
-    "scenario_worker",
-    "show_progress",
     "run_benchmark",
     "run_user_simulation",
     "run_autofind",
@@ -138,10 +156,18 @@ __all__ = [
     "har_to_scenario",
     "har_to_url_file",
     "convert_har",
-    # version
-    "__version__",
 ]
 
+from pywrkr.api import (
+    Config,
+    Latency,
+    LiveStats,
+    Percentiles,
+    Result,
+    ThresholdVerdict,
+    arun,
+    run,
+)
 from pywrkr.assertions import (
     ANY_VALUE,
     HeaderAssertion,
@@ -280,17 +306,42 @@ from pywrkr.traffic_profiles import (
     parse_traffic_profile,
 )
 from pywrkr.workers import (
-    LiveDashboard,
-    create_trace_config,
-    make_url,
     run_autofind,
     run_benchmark,
     run_user_simulation,
-    scenario_worker,
-    show_progress,
-    user_worker,
-    worker,
 )
+
+# Worker coroutines leaked into the package namespace before the library API
+# existed. They stay importable for one minor release so nothing breaks
+# overnight, but reaching for them now says so.
+_DEPRECATED_ATTRS = {
+    "worker": "pywrkr.workers",
+    "user_worker": "pywrkr.workers",
+    "scenario_worker": "pywrkr.workers",
+    "show_progress": "pywrkr.workers",
+    "create_trace_config": "pywrkr.workers",
+    "make_url": "pywrkr.workers",
+    "LiveDashboard": "pywrkr.workers",
+}
+
+
+def __getattr__(name: str):
+    """Serve deprecated names with a warning (PEP 562)."""
+    module_path = _DEPRECATED_ATTRS.get(name)
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    import warnings
+
+    warnings.warn(
+        f"pywrkr.{name} is an internal helper and is no longer part of the public "
+        f"API; import it from {module_path} if you really need it. "
+        f"See pywrkr.__all__ for the supported surface.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return getattr(importlib.import_module(module_path), name)
+
 
 try:
     from importlib.metadata import PackageNotFoundError, version

@@ -12,6 +12,8 @@ import signal
 import sys
 import time
 import uuid
+from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
@@ -63,6 +65,18 @@ from pywrkr.traffic_profiles import RateLimiter
 
 # Re-export aggregate_breakdowns for backward compatibility
 __all__ = ["aggregate_breakdowns"]
+
+
+@dataclass(frozen=True)
+class LiveStats:
+    """A snapshot of a run in flight, handed to an ``on_tick`` callback."""
+
+    elapsed: float
+    total_requests: int
+    total_errors: int
+    requests_per_sec: float
+    active_users: "int | None" = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -1137,8 +1151,15 @@ async def show_progress(
     all_stats: list[WorkerStats],
     stop: asyncio.Event,
     active_users: ActiveUsers | None = None,
+    on_tick: "Callable[[LiveStats], None] | None" = None,
+    silent: bool = False,
 ) -> None:
-    """Display a text-based progress line during benchmark execution."""
+    """Display a text-based progress line during benchmark execution.
+
+    *on_tick* receives a :class:`LiveStats` snapshot once a second, which is how
+    a library caller subscribes to progress. *silent* suppresses the terminal
+    line, so a library run writes nothing to stdout.
+    """
     while not stop.is_set():
         # Wait up to 1s but wake immediately when stop is set, so the task
         # exits promptly instead of finishing a full sleep after the run ends.
@@ -1149,6 +1170,24 @@ async def show_progress(
         total_req = sum(ws.total_requests for ws in all_stats)
         total_err = sum(ws.errors for ws in all_stats)
         rps = total_req / elapsed if elapsed > 0 else 0
+
+        if on_tick is not None:
+            # A caller-supplied callback must never take the run down with it.
+            try:
+                on_tick(
+                    LiveStats(
+                        elapsed=elapsed,
+                        total_requests=total_req,
+                        total_errors=total_err,
+                        requests_per_sec=rps,
+                        active_users=active_users.count if active_users is not None else None,
+                    )
+                )
+            except Exception:
+                logger.exception("on_tick callback raised; continuing the run")
+
+        if silent:
+            continue
 
         users_str = ""
         if active_users is not None:
@@ -1167,8 +1206,9 @@ async def show_progress(
                 f"| {rps:>8.1f} req/s | {total_err} errors{users_str} "
             )
         sys.stdout.flush()
-    sys.stdout.write("\r" + " " * 80 + "\r")
-    sys.stdout.flush()
+    if not silent:
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -1207,14 +1247,30 @@ def _create_progress_task(
     num_requests: int | None = None,
     active_users: ActiveUsers | None = None,
     quiet: bool = False,
+    on_tick: "Callable[[LiveStats], None] | None" = None,
 ) -> asyncio.Task:
     """Create the progress display or live dashboard task."""
-    if quiet:
+    if quiet and on_tick is None:
 
         async def _wait_stop(stop):
             await stop.wait()
 
         return asyncio.create_task(_wait_stop(stop_event))
+
+    if quiet:
+        # Silent, but still driving the caller's callback.
+        return asyncio.create_task(
+            show_progress(
+                start_time,
+                duration,
+                num_requests,
+                all_stats,
+                stop_event,
+                active_users,
+                on_tick=on_tick,
+                silent=True,
+            )
+        )
 
     if config.live_dashboard and RICH_AVAILABLE:
         dashboard = LiveDashboard(all_stats, config, start_time, active_users)
@@ -1225,7 +1281,15 @@ def _create_progress_task(
         logger.warning("Falling back to standard progress display.")
 
     return asyncio.create_task(
-        show_progress(start_time, duration, num_requests, all_stats, stop_event, active_users)
+        show_progress(
+            start_time,
+            duration,
+            num_requests,
+            all_stats,
+            stop_event,
+            active_users,
+            on_tick=on_tick,
+        )
     )
 
 
@@ -1241,8 +1305,14 @@ async def _finalize_run(
     concurrency: int,
     *,
     quiet: bool = False,
+    on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
 ) -> tuple[WorkerStats, int]:
-    """Await workers, merge stats, print results, and evaluate thresholds."""
+    """Await workers, merge stats, print results, and evaluate thresholds.
+
+    *on_complete* receives ``(stats, actual_duration, concurrency)`` — the exact
+    numbers this run reported with, so a library caller can build the same
+    result the CLI prints rather than re-deriving the duration.
+    """
     worker_crashed = False
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1314,6 +1384,9 @@ async def _finalize_run(
     if not run_observability_exports(merged, actual_duration, concurrency, config, rate_limiter):
         exit_code = max(exit_code, 1)
 
+    if on_complete is not None:
+        on_complete(merged, actual_duration, concurrency)
+
     return merged, exit_code
 
 
@@ -1322,7 +1395,13 @@ async def _finalize_run(
 # ---------------------------------------------------------------------------
 
 
-async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
+async def run_benchmark(
+    config: BenchmarkConfig,
+    *,
+    on_tick: "Callable[[LiveStats], None] | None" = None,
+    install_signal_handlers: bool = True,
+    on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
+) -> tuple[WorkerStats, int]:
     """Run a fixed-concurrency benchmark and return merged stats with exit code.
 
     Creates N worker tasks distributed across thread groups, each sharing a
@@ -1347,6 +1426,10 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         in that group. Signal handlers (SIGINT/SIGTERM) set a stop_event
         that all workers check between requests.
     """
+    # Sub-runs (distributed workers, autofind steps) and library callers set
+    # _quiet: they own the reporting, so this one stays silent.
+    quiet = getattr(config, "_quiet", False)
+
     mode_str = (
         f"{config.num_requests} requests" if config.num_requests else f"{config.duration}s duration"
     )
@@ -1374,7 +1457,10 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     logger.info("")
 
     stop_event = asyncio.Event()
-    _setup_signal_handlers(stop_event)
+    if install_signal_handlers:
+        # A library caller must not have the process's SIGINT/SIGTERM handlers
+        # replaced out from under it.
+        _setup_signal_handlers(stop_event)
 
     rate_limiter = _create_rate_limiter(config, config.duration)
 
@@ -1449,6 +1535,8 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         stop_event,
         duration=config.duration,
         num_requests=config.num_requests,
+        quiet=quiet,
+        on_tick=on_tick,
     )
 
     return await _finalize_run(
@@ -1461,6 +1549,8 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         config,
         rate_limiter,
         config.connections,
+        quiet=quiet,
+        on_complete=on_complete,
     )
 
 
@@ -1469,7 +1559,13 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
 # ---------------------------------------------------------------------------
 
 
-async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
+async def run_user_simulation(
+    config: BenchmarkConfig,
+    *,
+    on_tick: "Callable[[LiveStats], None] | None" = None,
+    install_signal_handlers: bool = True,
+    on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
+) -> tuple[WorkerStats, int]:
     """Run a virtual-user load test with ramp-up and think time.
 
     Creates one task per virtual user, optionally staggering their start
@@ -1525,7 +1621,10 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         logger.info("")
 
     stop_event = asyncio.Event()
-    _setup_signal_handlers(stop_event)
+    if install_signal_handlers:
+        # A library caller must not have the process's SIGINT/SIGTERM handlers
+        # replaced out from under it.
+        _setup_signal_handlers(stop_event)
 
     rate_limiter = _create_rate_limiter(config, duration)
 
@@ -1559,6 +1658,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         duration=duration,
         active_users=active_users,
         quiet=quiet,
+        on_tick=on_tick,
     )
 
     # Guard the window between backend creation and _finalize_run (which owns
@@ -1618,6 +1718,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
             rate_limiter,
             num_users,
             quiet=quiet,
+            on_complete=on_complete,
         )
     except BaseException:
         # Cancellation (or any other failure) before/within _finalize_run:

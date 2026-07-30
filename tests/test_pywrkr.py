@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr import workers
 from pywrkr.distributed import (
     _deserialize_config,
     _deserialize_stats,
@@ -1339,11 +1340,11 @@ class TestUserSimulationIntegration(AioHTTPTestCase):
 class TestMakeUrl(unittest.TestCase):
     def test_no_random_param(self):
         url = "http://example.com/path"
-        self.assertEqual(pywrkr.make_url(url, False), url)
+        self.assertEqual(workers.make_url(url, False), url)
 
     def test_with_random_param_no_query(self):
         url = "http://example.com/path"
-        result = pywrkr.make_url(url, True)
+        result = workers.make_url(url, True)
         self.assertTrue(result.startswith("http://example.com/path?_cb="))
         # UUID hex is 32 chars
         cb_value = result.split("_cb=")[1]
@@ -1352,12 +1353,12 @@ class TestMakeUrl(unittest.TestCase):
 
     def test_with_random_param_existing_query(self):
         url = "http://example.com/path?foo=bar"
-        result = pywrkr.make_url(url, True)
+        result = workers.make_url(url, True)
         self.assertTrue(result.startswith("http://example.com/path?foo=bar&_cb="))
 
     def test_uniqueness(self):
         url = "http://example.com/"
-        results = {pywrkr.make_url(url, True) for _ in range(100)}
+        results = {workers.make_url(url, True) for _ in range(100)}
         self.assertEqual(len(results), 100)
 
     def test_preserves_url_without_flag(self):
@@ -1366,7 +1367,7 @@ class TestMakeUrl(unittest.TestCase):
             "http://example.com/path?key=val",
             "https://host:8080/a/b/c?x=1&y=2",
         ]:
-            self.assertEqual(pywrkr.make_url(url, False), url)
+            self.assertEqual(workers.make_url(url, False), url)
 
 
 class TestBenchmarkConfigRandomParam(unittest.TestCase):
@@ -2494,7 +2495,7 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [self._make_stats()]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic()
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        dashboard = workers.LiveDashboard(stats, config, start_time)
         self.assertEqual(dashboard.config.url, "http://example.com/")
         self.assertIsNone(dashboard.active_users)
 
@@ -2504,7 +2505,7 @@ class TestLiveDashboard(unittest.TestCase):
         config = pywrkr.BenchmarkConfig(url="http://example.com/", users=10, duration=10.0)
         start_time = time.monotonic()
         active_users = {"count": 5}
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
+        dashboard = workers.LiveDashboard(stats, config, start_time, active_users)
         self.assertEqual(dashboard.active_users["count"], 5)
 
     @unittest.skipUnless(pywrkr.RICH_AVAILABLE, "rich not installed")
@@ -2513,7 +2514,7 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [self._make_stats()]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic() - 5.0  # simulate 5s elapsed
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        dashboard = workers.LiveDashboard(stats, config, start_time)
         panel = dashboard._build_display()
         # Panel should be a rich Panel object
         from rich.panel import Panel
@@ -2526,7 +2527,7 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [pywrkr.WorkerStats()]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
         start_time = time.monotonic()
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        dashboard = workers.LiveDashboard(stats, config, start_time)
         # Should not raise
         panel = dashboard._build_display()
         from rich.panel import Panel
@@ -2539,7 +2540,7 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [self._make_stats(20)]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", num_requests=100, duration=None)
         start_time = time.monotonic() - 2.0
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        dashboard = workers.LiveDashboard(stats, config, start_time)
         panel = dashboard._build_display()
         from rich.panel import Panel
 
@@ -2555,7 +2556,7 @@ class TestLiveDashboard(unittest.TestCase):
 
         active_users = ActiveUsers()
         active_users.count = 50
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time, active_users)
+        dashboard = workers.LiveDashboard(stats, config, start_time, active_users)
         panel = dashboard._build_display()
         from rich.panel import Panel
 
@@ -2567,7 +2568,7 @@ class TestLiveDashboard(unittest.TestCase):
         stats = [self._make_stats(10)]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=None, num_requests=None)
         start_time = time.monotonic() - 3.0
-        dashboard = pywrkr.LiveDashboard(stats, config, start_time)
+        dashboard = workers.LiveDashboard(stats, config, start_time)
         panel = dashboard._build_display()
         from rich.panel import Panel
 
@@ -6559,7 +6560,7 @@ class TestLiveDashboardStopEvent(unittest.TestCase):
 
         stats = [pywrkr.WorkerStats()]
         config = pywrkr.BenchmarkConfig(url="http://example.com/", duration=10.0)
-        dashboard = pywrkr.LiveDashboard(stats, config, time.monotonic())
+        dashboard = workers.LiveDashboard(stats, config, time.monotonic())
 
         # _build_display does `from rich.panel import Panel` and
         # `from rich.table import Table`; run() does `from rich.live import Live`.

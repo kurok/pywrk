@@ -46,6 +46,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "pywrkr.templates" = ["*.html"]
+"pywrkr" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -60,6 +61,14 @@ warn_return_any = false
 warn_unused_configs = true
 disallow_untyped_defs = false
 # Per-module overrides for files that need gradual typing
+# The public API is held to a stricter standard than the internals it wraps.
+[[tool.mypy.overrides]]
+module = ["pywrkr.api"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+no_implicit_optional = true
+
 [[tool.mypy.overrides]]
 module = ["pywrkr.distributed", "pywrkr.workers", "pywrkr.reporting"]
 disable_error_code = ["return-value", "operator", "arg-type", "type-var", "assignment", "name-defined", "var-annotated"]
