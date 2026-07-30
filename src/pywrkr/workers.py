@@ -42,6 +42,7 @@ from pywrkr.reporting import (
     print_autofind_summary,
     print_results,
     print_threshold_results,
+    run_baseline_gate,
     run_observability_exports,
 )
 from pywrkr.templating import (
@@ -1342,6 +1343,12 @@ async def _finalize_run(
             print_threshold_results(th_results, file=sys.stdout)
         if any(not passed for _, _, passed in th_results):
             exit_code = 2
+
+    # Baseline gate. An absolute threshold breach (2) is the stronger statement,
+    # so it keeps precedence over a relative regression (3).
+    baseline_code = run_baseline_gate(merged, actual_duration, concurrency, config, rate_limiter)
+    if baseline_code and exit_code != 2:
+        exit_code = baseline_code
 
     # A crashed worker means load/data was silently dropped; surface a
     # non-zero exit code without clobbering a threshold failure (2).

@@ -12,7 +12,16 @@ import sys
 from collections import defaultdict
 from string import Template
 from typing import NamedTuple, TextIO
+from urllib.parse import urlparse
 
+from pywrkr.compare import (
+    EXIT_USAGE,
+    SCHEMA_VERSION,
+    ResultsError,
+    compare_results,
+    load_baseline,
+    render_report,
+)
 from pywrkr.config import (
     BenchmarkConfig,
     LatencyBreakdown,
@@ -425,6 +434,33 @@ def print_rps_timeline(
         print(f"    {t_start:>4}s | {bar:<{bar_max}} | {rps:>8.1f} req/s", file=file)
 
 
+def _config_snapshot(config: BenchmarkConfig, connections: int) -> dict:
+    """Capture the load shape a run was asked for.
+
+    Only the fields that make two runs comparable — comparing a 10-user run to a
+    1000-user baseline is arithmetically fine and completely meaningless. The
+    host is recorded but not the full URL, so query-string noise does not make
+    every run look incomparable.
+    """
+    if config.users is not None:
+        mode = "users"
+    elif config.num_requests is not None:
+        mode = "requests"
+    else:
+        mode = "duration"
+    if config.scenario is not None:
+        mode = f"scenario:{mode}"
+    return {
+        "mode": mode,
+        "connections": connections,
+        "users": config.users,
+        "duration": config.duration,
+        "num_requests": config.num_requests,
+        "rate": config.rate,
+        "url_host": urlparse(config.url).netloc or None,
+    }
+
+
 def build_results_dict(
     stats: WorkerStats,
     duration: float,
@@ -436,6 +472,9 @@ def build_results_dict(
     rps = stats.total_requests / duration if duration > 0 else 0
     transfer_rate = stats.total_bytes / duration if duration > 0 else 0
     result: dict = {
+        # Lets `pywrkr compare` reject files it cannot read. Files written before
+        # this key existed have the same shape and are read as version 1.
+        "schema_version": SCHEMA_VERSION,
         "duration_sec": round(duration, 3),
         "connections": connections,
         "total_requests": stats.total_requests,
@@ -456,6 +495,10 @@ def build_results_dict(
         # by merge_stats(); see normalize_timeline.
         "rps_timeline": [[round(ts, 3), count] for ts, count in stats.rps_timeline],
     }
+    if config is not None:
+        # Snapshot of what was asked for, so `pywrkr compare` can tell whether
+        # two runs are even comparable.
+        result["config"] = _config_snapshot(config, connections)
     if config is not None and config.tags:
         result["tags"] = dict(config.tags)
     if config is not None and config.rate is not None:
@@ -975,6 +1018,67 @@ def export_to_prometheus(results: dict, endpoint: str, tags: dict[str, str]) -> 
     except Exception as e:
         _logger.error("Prometheus export failed (endpoint=%s): %s", endpoint, e)
         return False
+
+
+def run_baseline_gate(
+    stats: WorkerStats,
+    duration: float,
+    connections: int,
+    config: BenchmarkConfig,
+    rate_limiter: "RateLimiter | None" = None,
+    file: TextIO | None = None,
+) -> int:
+    """Write ``--save-baseline`` and apply ``--baseline`` in one pass.
+
+    Folding the comparison into the run turns a three-step CI recipe (run,
+    dump JSON, diff it) into one command.
+
+    Sub-runs are skipped: a distributed worker and an autofind step each see
+    only part of the picture, and gating (or worse, overwriting the baseline
+    file) from several of them at once would be meaningless. The master applies
+    the gate to the merged result instead.
+
+    Returns:
+        An exit code: 0 when there is nothing to do or nothing regressed,
+        ``EXIT_REGRESSION`` when a ``--fail-on`` rule fired, ``EXIT_USAGE``
+        when the baseline could not be read or the configs differ under
+        ``--strict-config``.
+    """
+    if not config.save_baseline and not config.baseline:
+        return 0
+    if getattr(config, "_quiet", False):
+        return 0
+
+    out = file if file is not None else sys.stdout
+    results = build_results_dict(stats, duration, connections, config, rate_limiter)
+
+    if config.save_baseline:
+        try:
+            write_json_output(config.save_baseline, results)
+        except OSError as exc:
+            print(f"\n  ERROR: could not write baseline: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"\n  Baseline written to: {config.save_baseline}", file=out)
+
+    if not config.baseline:
+        return 0
+
+    try:
+        baseline, sources = load_baseline(config.baseline)
+    except ResultsError as exc:
+        print(f"\n  ERROR: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    report = compare_results(baseline, results, config.fail_on, sources)
+    render_report(report, config.compare_format, file=out)
+
+    if report.config_warnings and config.strict_config:
+        print(
+            "\n  ERROR: --strict-config is set and the run configurations differ",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return report.exit_code
 
 
 def run_observability_exports(

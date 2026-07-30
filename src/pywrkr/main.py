@@ -17,6 +17,16 @@ import os
 import sys
 from urllib.parse import urlparse
 
+from pywrkr.compare import (
+    COMPARE_FORMATS,
+    EXIT_USAGE,
+    ResultsError,
+    compare_results,
+    load_baseline,
+    load_results,
+    parse_fail_on,
+    render_report,
+)
 from pywrkr.config import (
     DEFAULT_CONNECTIONS,
     DEFAULT_DURATION,
@@ -228,6 +238,41 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="URL",
         help="Push metrics to a Prometheus Pushgateway-compatible endpoint",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        metavar="FILE_OR_GLOB",
+        help="Compare this run against previous --json results and apply --fail-on "
+        "rules. A glob (e.g. 'baselines/*.json') averages the runs it matches",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        default=None,
+        metavar="FILE",
+        help="Write this run's results to FILE for a later --baseline comparison",
+    )
+    parser.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        dest="fail_on",
+        metavar="EXPR",
+        help="Regression rule against the baseline delta (repeatable), e.g. "
+        "--fail-on 'p95 > +10%%' --fail-on 'rps < -5%%'. Exit code 3 when one fires",
+    )
+    parser.add_argument(
+        "--strict-config",
+        action="store_true",
+        default=False,
+        help="Fail (exit 1) instead of warning when the baseline run used a "
+        "different load shape (users, connections, duration, host)",
+    )
+    parser.add_argument(
+        "--compare-format",
+        choices=list(COMPARE_FORMATS),
+        default="table",
+        help="Baseline comparison output format (default: table)",
     )
     parser.add_argument(
         "--threshold",
@@ -521,6 +566,89 @@ Examples:
     return parser
 
 
+def _build_compare_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the `compare` subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="pywrkr compare",
+        description="Compare two pywrkr --json result files and gate on the deltas",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Delta table only (never fails)
+  pywrkr compare baseline.json current.json
+
+  # Gate a PR: fail if p95 got 10%% worse or throughput dropped 5%%
+  pywrkr compare baseline.json current.json \\
+      --fail-on 'p95 > +10%%' --fail-on 'rps < -5%%'
+
+  # Absolute deltas, and a per-step metric
+  pywrkr compare base.json cur.json --fail-on 'p99 > +50ms' \\
+      --fail-on 'step:checkout.mean > +20ms'
+
+  # Average several baseline runs to ride out single-run noise
+  pywrkr compare 'baselines/*.json' current.json --fail-on 'p95 > +10%%'
+
+  # Ready to paste into a PR comment
+  pywrkr compare base.json cur.json --fail-on 'p95 > +10%%' --format markdown
+
+Exit codes: 0 = no regression, 3 = a --fail-on rule fired, 1 = usage/schema error.
+""",
+    )
+    parser.add_argument("baseline", help="Baseline --json file, or a glob to average")
+    parser.add_argument("current", help="Current --json file")
+    parser.add_argument(
+        "--fail-on",
+        action="append",
+        default=[],
+        dest="fail_on",
+        metavar="EXPR",
+        help="Regression rule (repeatable), e.g. 'p95 > +10%%', 'rps < -5%%', 'p99 > +50ms'",
+    )
+    parser.add_argument(
+        "--format",
+        choices=list(COMPARE_FORMATS),
+        default="table",
+        dest="format",
+        help="Output format (default: table)",
+    )
+    parser.add_argument(
+        "--strict-config",
+        action="store_true",
+        default=False,
+        help="Fail (exit 1) instead of warning when the two runs used different load shapes",
+    )
+    return parser
+
+
+def _run_compare(args: argparse.Namespace) -> None:
+    """Execute the compare subcommand."""
+    rules = []
+    for expr in args.fail_on:
+        try:
+            rules.append(parse_fail_on(expr))
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+
+    try:
+        baseline, sources = load_baseline(args.baseline)
+        current = load_results(args.current)
+    except ResultsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
+    report = compare_results(baseline, current, rules, sources)
+    render_report(report, args.format)
+
+    if report.config_warnings and args.strict_config:
+        print(
+            "Error: --strict-config is set and the run configurations differ",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
+    sys.exit(report.exit_code)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -812,6 +940,28 @@ def _parse_tags_and_thresholds(
     return tags, thresholds
 
 
+def _parse_baseline_options(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list:
+    """Validate the baseline gate flags and compile the --fail-on rules."""
+    rules = []
+    for expr in getattr(args, "fail_on", []) or []:
+        try:
+            rules.append(parse_fail_on(expr))
+        except ValueError as e:
+            parser.error(str(e))
+
+    if rules and not args.baseline:
+        parser.error("--fail-on requires --baseline (there is nothing to compare against)")
+    if args.strict_config and not args.baseline:
+        parser.error("--strict-config requires --baseline")
+    if args.baseline and not rules:
+        # Still useful: the delta table is printed, the gate just never fails.
+        logger.warning(
+            "--baseline given without --fail-on: the comparison is reported but "
+            "cannot fail the build. Add e.g. --fail-on 'p95 > +10%%'."
+        )
+    return rules
+
+
 def _split_named_option(parser: argparse.ArgumentParser, raw: str, flag: str) -> tuple[str, str]:
     """Split a ``NAME=VALUE`` CLI option, erroring out on a malformed one."""
     if "=" not in raw:
@@ -976,6 +1126,11 @@ def _parse_and_validate_args(
         otel_endpoint=args.otel_endpoint,
         prom_remote_write=args.prom_remote_write,
         thresholds=thresholds,
+        baseline=args.baseline,
+        save_baseline=args.save_baseline,
+        fail_on=_parse_baseline_options(parser, args),
+        strict_config=args.strict_config,
+        compare_format=args.compare_format,
     )
 
     _validate_rate_and_traffic(parser, args, config)
@@ -1103,6 +1258,10 @@ def main() -> None:
         parser = _build_har_import_parser()
         args = parser.parse_args(sys.argv[2:])
         _run_har_import(args)
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "compare":
+        _run_compare(_build_compare_parser().parse_args(sys.argv[2:]))
         return
 
     parser = _build_parser()

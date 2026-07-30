@@ -11,6 +11,7 @@ import os
 import sys
 import time
 
+from pywrkr.compare import parse_fail_on
 from pywrkr.config import (
     DEFAULT_CONNECTIONS,
     DEFAULT_THINK_TIME_JITTER,
@@ -36,6 +37,7 @@ from pywrkr.reporting import (
     evaluate_thresholds,
     print_results,
     print_threshold_results,
+    run_baseline_gate,
 )
 from pywrkr.workers import run_benchmark, run_user_simulation
 
@@ -227,6 +229,13 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "otel_endpoint": config.otel_endpoint,
         "prom_remote_write": config.prom_remote_write,
         "thresholds": [_serialize_threshold(t) for t in config.thresholds],
+        # Carried for a faithful round-trip; a worker never acts on them, because
+        # _finalize_run skips the gate for a sub-run (see run_baseline_gate).
+        "baseline": config.baseline,
+        "save_baseline": config.save_baseline,
+        "fail_on": [rule.raw for rule in config.fail_on],
+        "strict_config": config.strict_config,
+        "compare_format": config.compare_format,
         "scenario": _serialize_scenario(config.scenario),
         "html_report": config.html_report,
         "csv_output": config.csv_output,
@@ -269,6 +278,11 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         otel_endpoint=data.get("otel_endpoint"),
         prom_remote_write=data.get("prom_remote_write"),
         thresholds=[_deserialize_threshold(t) for t in data.get("thresholds", [])],
+        baseline=data.get("baseline"),
+        save_baseline=data.get("save_baseline"),
+        fail_on=[parse_fail_on(expr) for expr in data.get("fail_on", [])],
+        strict_config=data.get("strict_config", False),
+        compare_format=data.get("compare_format", "table"),
         scenario=_deserialize_scenario(data.get("scenario")),
         html_report=data.get("html_report"),
         csv_output=data.get("csv_output"),
@@ -604,6 +618,13 @@ async def run_master(
         thresholds=config.thresholds,
         rate=config.rate,
         rate_ramp=config.rate_ramp,
+        # The gate belongs to the merged cluster result, not to any one worker
+        # (each of which saw only its own share of the load).
+        baseline=config.baseline,
+        save_baseline=config.save_baseline,
+        fail_on=config.fail_on,
+        strict_config=config.strict_config,
+        compare_format=config.compare_format,
     )
     # Worker timelines are rebased to per-worker [0, duration) offsets in
     # merge_worker_stats, so the master buckets them from start=0.0 rather than
@@ -623,6 +644,14 @@ async def run_master(
         print_threshold_results(th_results, file=sys.stdout)
         if any(not passed for _, _, passed in th_results):
             exit_code = 2
+
+    # Baseline gate on the merged cluster result. As in single-node mode, an
+    # absolute threshold breach (2) outranks a relative regression (3).
+    baseline_code = run_baseline_gate(
+        merged, actual_duration, report_config.connections, report_config
+    )
+    if baseline_code and exit_code != 2:
+        exit_code = baseline_code
 
     return merged, exit_code
 

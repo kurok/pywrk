@@ -17,6 +17,21 @@ __all__ = [
     "validate_scenario_templates",
     "SESSION_CHOICES",
     "SSLConfig",
+    # pywrkr.compare
+    "COMPARE_FORMATS",
+    "SCHEMA_VERSION",
+    "ComparisonReport",
+    "FailOn",
+    "MetricDelta",
+    "ResultsError",
+    "Verdict",
+    "average_results",
+    "compare_results",
+    "load_baseline",
+    "load_results",
+    "metric_value",
+    "parse_fail_on",
+    "render_report",
     # pywrkr.feeders
     "FEEDER_STRATEGIES",
     "DataRuntime",
@@ -108,6 +123,22 @@ __all__ = [
     "__version__",
 ]
 
+from pywrkr.compare import (
+    COMPARE_FORMATS,
+    SCHEMA_VERSION,
+    ComparisonReport,
+    FailOn,
+    MetricDelta,
+    ResultsError,
+    Verdict,
+    average_results,
+    compare_results,
+    load_baseline,
+    load_results,
+    metric_value,
+    parse_fail_on,
+    render_report,
+)
 from pywrkr.config import (
     SESSION_CHOICES,
     AutofindConfig,
