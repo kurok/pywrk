@@ -15,6 +15,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from pywrkr import ci
 from pywrkr.compare import EXIT_REGRESSION, compare_results, parse_fail_on
 from pywrkr.main import _build_summary_parser, _run_summary
@@ -448,7 +450,6 @@ class TestActionDefinition(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        yaml = __import__("yaml")
         cls.action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
         cls.steps = cls.action["runs"]["steps"]
 
@@ -516,7 +517,6 @@ class TestActionDefinition(unittest.TestCase):
                     os.unlink(path)
 
     def test_the_dogfood_workflow_exercises_the_action(self):
-        yaml = __import__("yaml")
         path = REPO_ROOT / ".github" / "workflows" / "action-test.yml"
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         steps = workflow["jobs"]["dogfood"]["steps"]
