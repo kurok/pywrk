@@ -33,7 +33,7 @@ import aiohttp
 from pywrkr.config import LatencyBreakdown, WorkerStats
 
 if TYPE_CHECKING:
-    from pywrkr.config import BenchmarkConfig
+    from pywrkr.config import BenchmarkConfig, SSLConfig
 
 #: Backend identifiers accepted internally.
 BACKEND_AIOHTTP = "aiohttp"
@@ -106,6 +106,16 @@ class BackendSession(ABC):
     def clear_cookies(self) -> None:
         """Drop every stored cookie (scenario ``session: fresh_per_iteration``)."""
 
+    def raw_websocket_session(self) -> "aiohttp.ClientSession | None":
+        """The client a scenario ``ws:`` step can open a socket on, or None.
+
+        Reusing this virtual user's own session is what makes the socket
+        inherit the cookies an earlier HTTP login step set -- the whole point
+        of a mixed HTTP/WebSocket flow. A backend that cannot speak WebSocket
+        returns None and the step reports that rather than failing obscurely.
+        """
+        return None
+
 
 class Backend(ABC):
     """A run's transport: owns the shared pool, hands out per-user sessions."""
@@ -174,12 +184,22 @@ def build_ssl_context(config: "BenchmarkConfig") -> "ssl.SSLContext | None":
     """Create an SSL context for HTTPS targets, or None for plain HTTP."""
     if urlparse(config.url).scheme != "https":
         return None
+    return ssl_context_from(config.ssl_config)
+
+
+def ssl_context_from(ssl_config: "SSLConfig") -> "ssl.SSLContext":
+    """Build a context from --ssl-verify / --ca-bundle, with no scheme opinion.
+
+    Split out from :func:`build_ssl_context` so ``wss://`` gets byte-identical
+    TLS behaviour to ``https://`` rather than a second implementation that
+    drifts from it.
+    """
     ssl_ctx = ssl.create_default_context()
-    if not config.ssl_config.verify:
+    if not ssl_config.verify:
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
-    elif config.ssl_config.ca_bundle:
-        ssl_ctx.load_verify_locations(config.ssl_config.ca_bundle)
+    elif ssl_config.ca_bundle:
+        ssl_ctx.load_verify_locations(ssl_config.ca_bundle)
     return ssl_ctx
 
 
@@ -225,6 +245,9 @@ class AiohttpSession(BackendSession):
             self._timeout_sec = timeout_sec
             self._timeout = aiohttp.ClientTimeout(total=timeout_sec)
         return self._timeout
+
+    def raw_websocket_session(self) -> "aiohttp.ClientSession | None":
+        return self._session
 
     async def __aenter__(self) -> "AiohttpSession":
         await self._session.__aenter__()

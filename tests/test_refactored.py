@@ -588,7 +588,12 @@ class TestDistributedSerialization(unittest.TestCase):
         # - _quiet: internal flag set by the deserializer itself
         # - traffic_profile: runtime object, not serializable as-is
         #   (rate limiter reconstructs it from rate/rate_ramp/duration)
-        EXCLUDED = {"_quiet", "traffic_profile"}
+        # - websocket: distributed WebSocket mode is not implemented, and the
+        #   CLI rejects --master against a ws:// target, so this is always None
+        #   on the wire. Scenario `ws:` steps DO travel -- see
+        #   _serialize_scenario_step -- so a mixed HTTP/WS scenario is
+        #   unaffected. See TestWebSocketNotDistributed.
+        EXCLUDED = {"_quiet", "traffic_profile", "websocket"}
 
         config_fields = {f.name for f in fields(BenchmarkConfig)} - EXCLUDED
         serialized_keys = set(_serialize_config(BenchmarkConfig(url="http://localhost/")).keys())

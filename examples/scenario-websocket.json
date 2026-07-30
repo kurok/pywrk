@@ -1,0 +1,28 @@
+{
+  "name": "Login over HTTP, subscribe over WebSocket",
+  "think_time": 1.0,
+  "steps": [
+    {
+      "name": "login",
+      "path": "/api/login",
+      "method": "POST",
+      "body": {"user": "${users.username}", "pass": "${users.password}"},
+      "assert_status": 200,
+      "extract": {"token": {"json": "$.token"}}
+    },
+    {
+      "name": "subscribe to the order feed",
+      "ws": "wss://ws.example.com/feed?auth=${token}",
+      "send": "{\"op\":\"subscribe\",\"channel\":\"orders\",\"req\":\"${uuid()}\"}",
+      "expect_message_contains": "\"subscribed\"",
+      "hold": "30s",
+      "extract": {"subscription_id": {"json": "$.sid"}}
+    },
+    {
+      "name": "acknowledge over HTTP",
+      "path": "/api/subscriptions/${subscription_id}/ack",
+      "method": "POST",
+      "assert_status": 204
+    }
+  ]
+}

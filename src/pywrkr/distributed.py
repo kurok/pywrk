@@ -100,6 +100,12 @@ def _serialize_scenario_step(step: ScenarioStep) -> dict:
         # Extractors travel in their scenario-file shape ({"json": "$.token"});
         # the worker recompiles them, so compiled regexes never cross the wire.
         "extract": {name: {rule.source: rule.expr} for name, rule in step.extract.items()},
+        # Without these a distributed run would turn a ws: step into an HTTP
+        # request against a ws:// URL, which fails obscurely on the worker.
+        "ws": step.ws,
+        "send": step.send,
+        "expect_message_contains": step.expect_message_contains,
+        "hold": step.hold,
     }
 
 
@@ -114,6 +120,10 @@ def _deserialize_scenario_step(data: dict) -> ScenarioStep:
         think_time=data.get("think_time"),
         name=data.get("name"),
         extract=parse_extract_spec(data.get("extract"), f"Step {data.get('name') or data['path']}"),
+        ws=data.get("ws"),
+        send=data.get("send"),
+        expect_message_contains=data.get("expect_message_contains"),
+        hold=data.get("hold", 0.0) or 0.0,
     )
 
 

@@ -11,7 +11,7 @@ import statistics
 import sys
 from collections import defaultdict
 from string import Template
-from typing import NamedTuple, TextIO
+from typing import TYPE_CHECKING, NamedTuple, TextIO
 from urllib.parse import urlparse
 
 from pywrkr.compare import (
@@ -30,6 +30,9 @@ from pywrkr.config import (
     WorkerStats,
 )
 from pywrkr.traffic_profiles import RateLimiter
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pywrkr.websockets import WsStats
 
 _logger = logging.getLogger(__name__)
 
@@ -580,6 +583,10 @@ def build_results_dict(
             result["traffic_profile"] = config.traffic_profile.describe()
         if rate_limiter is not None:
             result["rate_limit_waits"] = rate_limiter.waits
+    if stats.ws is not None:
+        from pywrkr.websockets import ws_results_section
+
+        result["websocket"] = ws_results_section(stats.ws, duration)
     finite_latencies = [x for x in stats.latencies if math.isfinite(x)]
     if finite_latencies:
         pct_pairs = compute_percentiles(finite_latencies)
@@ -837,6 +844,12 @@ def generate_gatling_html_report(
             "</div>"
         ) + error_table_html
 
+    # WebSocket panel, prepended so the report leads with the metrics that
+    # describe the run rather than with HTTP-shaped ones that barely apply.
+    websocket = results.get("websocket")
+    if websocket:
+        error_table_html = _websocket_html_table(websocket) + error_table_html
+
     # Build template context
     context = {
         "title": _html_escape(url),
@@ -878,6 +891,62 @@ def generate_gatling_html_report(
 
     template = _load_template("gatling_report.html")
     return template.safe_substitute(context)
+
+
+def _websocket_html_table(section: dict) -> str:
+    """Render the WebSocket metrics as a card for the HTML report."""
+    connections = section.get("connections", {})
+    messages = section.get("messages", {})
+    close = section.get("close", {})
+    rows = [
+        ("Connections opened", f"{connections.get('opened', 0):,}"),
+        ("Connections failed", f"{connections.get('failed', 0):,}"),
+        ("Connections dropped", f"{connections.get('dropped', 0):,}"),
+        ("Reconnects", f"{connections.get('reconnects', 0):,}"),
+        ("Peak concurrent", f"{connections.get('peak_concurrent', 0):,}"),
+        (
+            "Messages sent",
+            f"{messages.get('sent', 0):,} ({messages.get('sent_per_sec', 0):,.2f}/s)",
+        ),
+        (
+            "Messages received",
+            f"{messages.get('received', 0):,} ({messages.get('received_per_sec', 0):,.2f}/s)",
+        ),
+        ("Bytes sent", format_bytes(messages.get("bytes_sent", 0))),
+        ("Bytes received", format_bytes(messages.get("bytes_received", 0))),
+        ("Reply timeouts", f"{messages.get('reply_timeouts', 0):,}"),
+        ("Close frames sent", f"{close.get('frames_sent', 0):,}"),
+        ("Close unacknowledged", f"{close.get('unacknowledged', 0):,}"),
+    ]
+    for label, key in (("Handshake", "handshake"), ("Round-trip", "rtt")):
+        block = section.get(key) or {}
+        if not block:
+            continue
+        pct = block.get("percentiles", {})
+        rows.append(
+            (
+                f"{label} latency",
+                f"mean {format_duration(block.get('mean', 0))} · "
+                f"p95 {format_duration(pct.get('p95', 0))} · "
+                f"p99 {format_duration(pct.get('p99', 0))}",
+            )
+        )
+    measured = _WS_LATENCY_DESCRIPTIONS.get(
+        section.get("latency_metric", ""), section.get("latency_metric", "")
+    )
+    body = "".join(
+        f"<tr><td>{_html_escape(k)}</td><td>{_html_escape(v)}</td></tr>" for k, v in rows
+    )
+    return (
+        '<div class="chart-card full" style="margin-bottom:28px">\n'
+        "  <h3>WebSocket</h3>\n"
+        f"  <p>Latency charts above measure the {_html_escape(measured)}.</p>\n"
+        '  <table class="errors-table">\n'
+        "    <tr><th>Metric</th><th>Value</th></tr>\n"
+        f"    {body}\n"
+        "  </table>\n"
+        "</div>"
+    )
 
 
 def _html_escape(s: str) -> str:
@@ -1192,6 +1261,77 @@ def run_observability_exports(
     return ok
 
 
+#: What ``WorkerStats.latencies`` holds in each WebSocket shape, spelled out
+#: rather than left for the reader to infer from the flags.
+_WS_LATENCY_DESCRIPTIONS = {
+    "rtt": "message round-trip time",
+    "handshake": "handshake time",
+    "step": "time from connect to the expected message, per ws: step",
+}
+
+
+def print_websocket_stats(ws: "WsStats", duration: float, file: TextIO | None = None) -> None:
+    """Print the WebSocket-specific section of the results.
+
+    Handshake and round-trip latency are shown separately even though one of
+    them is also the run's headline latency: a service that connects instantly
+    and answers slowly and one that does the reverse are different problems,
+    and a single latency line cannot tell them apart. Which of the two the
+    thresholds were applied to is stated rather than implied.
+    """
+    out = file if file is not None else sys.stdout
+    per_sec = (lambda n: n / duration) if duration > 0 else (lambda n: 0.0)
+
+    print(f"\n{'=' * 70}", file=out)
+    print("  WEBSOCKET STATISTICS", file=out)
+    print(f"{'=' * 70}", file=out)
+    print(f"  Connections Opened:  {ws.connections_opened:,}", file=out)
+    print(f"  Connections Failed:  {ws.connections_failed:,}", file=out)
+    print(f"  Connections Dropped: {ws.connections_dropped:,}", file=out)
+    if ws.reconnects:
+        print(f"  Reconnects:          {ws.reconnects:,}", file=out)
+    if ws.peak_concurrent:
+        # Only the standalone mode holds a fleet of sockets whose concurrency
+        # is a meaningful number; a scenario opens one per step and closes it.
+        print(f"  Peak Concurrent:     {ws.peak_concurrent:,}", file=out)
+    print(
+        f"  Messages Sent:       {ws.messages_sent:,} ({per_sec(ws.messages_sent):,.2f}/s)",
+        file=out,
+    )
+    print(
+        f"  Messages Received:   {ws.messages_received:,} ({per_sec(ws.messages_received):,.2f}/s)",
+        file=out,
+    )
+    print(f"  Bytes Sent:          {format_bytes(ws.bytes_sent)}", file=out)
+    print(f"  Bytes Received:      {format_bytes(ws.bytes_received)}", file=out)
+    if ws.reply_timeouts:
+        print(f"  Reply Timeouts:      {ws.reply_timeouts:,}", file=out)
+    print(f"  Close Frames Sent:   {ws.close_frames_sent:,}", file=out)
+    if ws.close_unacked:
+        print(f"  Close Unacked:       {ws.close_unacked:,}", file=out)
+    if ws.close_codes:
+        codes = ", ".join(f"{code}: {count:,}" for code, count in sorted(ws.close_codes.items()))
+        print(f"  Close Codes:         {codes}", file=out)
+
+    for label, samples in (("Handshake", ws.handshake_latencies), ("Round-trip", ws.rtt_latencies)):
+        finite = [x for x in samples if math.isfinite(x)]
+        if not finite:
+            continue
+        pct = dict(compute_percentiles(finite))
+        print(
+            f"\n  {label} latency: "
+            f"min {format_duration(min(finite))} · "
+            f"mean {format_duration(statistics.mean(finite))} · "
+            f"p50 {format_duration(pct.get(50, 0.0))} · "
+            f"p95 {format_duration(pct.get(95, 0.0))} · "
+            f"p99 {format_duration(pct.get(99, 0.0))} · "
+            f"max {format_duration(max(finite))}",
+            file=out,
+        )
+    measured = _WS_LATENCY_DESCRIPTIONS.get(ws.latency_metric, ws.latency_metric)
+    print(f"\n  Latency statistics above measure the {measured}.", file=out)
+
+
 def _print_console_results(
     stats: WorkerStats,
     duration: float,
@@ -1215,7 +1355,9 @@ def _print_console_results(
     print("  BENCHMARK RESULTS", file=out)
     print("=" * 70, file=out)
 
-    if config.scenario:
+    if config.websocket is not None:
+        mode = f"websocket, {config.duration}s duration"
+    elif config.scenario:
         mode = f"scenario '{config.scenario.name}'"
         if config.users:
             mode += f", {config.users} virtual users, {config.duration}s"
@@ -1241,12 +1383,19 @@ def _print_console_results(
             print(f"  Avg Reqs/User:     {stats.total_requests / config.users:,.1f}", file=out)
     else:
         print(f"  Connections:       {connections}", file=out)
-    print(f"  Keep-Alive:        {'yes' if config.keepalive else 'no'}", file=out)
+    if config.websocket is None:
+        # A WebSocket is persistent by definition; printing "Keep-Alive: yes"
+        # would imply a choice that does not exist in this mode.
+        print(f"  Keep-Alive:        {'yes' if config.keepalive else 'no'}", file=out)
     if config.users:
         # Only meaningful where there are virtual users to isolate; plain
         # connection mode has no per-user identity.
         print(f"  Sessions:          {describe_session_mode(config)}", file=out)
-    print(f"  Total Requests:    {stats.total_requests:,}", file=out)
+    if config.websocket is not None and stats.ws is not None:
+        label = "Messages Sent" if stats.ws.primary_metric == "messages" else "Connections Made"
+        print(f"  {label + ':':<18} {stats.total_requests:,}", file=out)
+    else:
+        print(f"  Total Requests:    {stats.total_requests:,}", file=out)
     print(f"  Total Errors:      {stats.errors:,}", file=out)
     if stats.content_length_errors:
         print(f"  Content-Len Errs:  {stats.content_length_errors:,}", file=out)
@@ -1265,6 +1414,9 @@ def _print_console_results(
             print(f"  Rate Limit Waits:  {rate_limiter.waits:,}", file=out)
     print(f"  Transfer/sec:      {format_bytes(transfer_rate)}/s", file=out)
     print(f"  Total Transfer:    {format_bytes(stats.total_bytes)}", file=out)
+
+    if stats.ws is not None:
+        print_websocket_stats(stats.ws, duration, file=out)
 
     # Latency stats (computed on finite samples only to avoid NaN/inf poisoning)
     finite_latencies = [x for x in stats.latencies if math.isfinite(x)]

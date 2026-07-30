@@ -936,6 +936,57 @@ def _render_step(
     return path, headers, _prepare_step_body(body, headers)
 
 
+async def _run_ws_step(
+    step,
+    ws_url: str,
+    headers: dict[str, str],
+    session,
+    config: BenchmarkConfig,
+    stats: WorkerStats,
+    step_name: str,
+    user_id: int,
+    variables: dict[str, str],
+    keep_literal: bool,
+    rows,
+    functions,
+    stop_event: asyncio.Event,
+):
+    """Execute one scenario ``ws:`` step against this user's session."""
+    from pywrkr.websockets import WsStats, WsStepOutcome, execute_ws_step
+
+    client = session.raw_websocket_session()
+    if client is None:
+        # --http2 selects the httpx backend, which has no WebSocket client.
+        # Saying so beats an AttributeError deep in the step loop.
+        return WsStepOutcome(
+            ok=False, error="WsUnsupportedBackend: ws: steps require the aiohttp backend"
+        )
+
+    if stats.ws is None:
+        # A scenario measures the whole step, not a handshake or a round trip,
+        # and its `total_requests` counts steps like every other step type.
+        stats.ws = WsStats(latency_metric="step", primary_metric="steps")
+    send = step.send
+    if send is not None:
+        send = substitute(send, variables, keep_literal, rows, functions)
+
+    outcome = await execute_ws_step(
+        client,
+        ws_url,
+        headers,
+        send=send,
+        expect_contains=step.expect_message_contains,
+        hold=step.hold,
+        timeout=config.timeout_sec,
+        stats=stats,
+        ws_stats=stats.ws,
+        stop=stop_event,
+    )
+    if not outcome.ok:
+        logger.warning("Scenario user %d step '%s' failed: %s", user_id, step_name, outcome.error)
+    return outcome
+
+
 async def scenario_worker(
     user_id: int,
     config: BenchmarkConfig,
@@ -1064,6 +1115,54 @@ async def scenario_worker(
                         )
                         iteration_aborted = True
                         break
+
+                    if step.is_websocket:
+                        # A ws: step carries an absolute URL, so it does not get
+                        # the scenario's base_url prepended, and it opens its
+                        # socket on this user's own session -- which is what
+                        # carries the cookies an earlier login step set.
+                        outcome = await _run_ws_step(
+                            step,
+                            step_path,
+                            req_headers,
+                            session,
+                            config,
+                            stats,
+                            step_name,
+                            user_id,
+                            variables,
+                            keep_literal,
+                            rows,
+                            runtime.functions,
+                            stop_event,
+                        )
+                        if not outcome.ok:
+                            _record_step_error(stats, step_name)
+                            stats.error_types[outcome.error or "WsError"] += 1
+                            if not iteration_error_counted:
+                                stats.errors += 1
+                                iteration_error_counted = True
+                            iteration_aborted = True
+                            break
+                        stats.total_requests += 1
+                        _record_step_latency(stats, step_name, outcome.latency)
+                        stats.latencies.append(outcome.latency)
+                        if stats.window_latencies is not None:
+                            stats.window_latencies.append(outcome.latency)
+                        if step.extract:
+                            values, failures = apply_extractors(step.extract, outcome.body, {})
+                            variables.update(values)
+                            if failures:
+                                _record_extract_failures(
+                                    stats, failures, step_name, user_id, iteration_error_counted
+                                )
+                                iteration_error_counted = True
+                                if abort_on_extract_failure:
+                                    iteration_aborted = True
+                                    break
+                        if await _think_time_wait(think, config.think_time_jitter, stop_event):
+                            return
+                        continue
 
                     request_url = make_url(f"{base_url}{step_path}", config.random_param)
 
