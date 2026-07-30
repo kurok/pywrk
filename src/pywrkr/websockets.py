@@ -238,6 +238,13 @@ def _account_message(
         return False
     # CLOSE / CLOSED / CLOSING.
     if expected_close:
+        # This side asked for the close. When a reader is running concurrently
+        # with close(), whichever of the two reads the peer's CLOSE frame
+        # first is the only one that sees its code -- so record it here rather
+        # than lose it to the race.
+        data = getattr(msg, "data", None)
+        if isinstance(data, int) and not isinstance(data, bool):
+            ws_stats.record_close(data)
         return False
     # The peer went away on its own, which is a dropped connection.
     ws_stats.connections_dropped += 1

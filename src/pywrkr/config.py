@@ -419,7 +419,16 @@ class WsStats:
     primary_metric: str = "connections"
 
     def record_close(self, code: "int | None") -> None:
-        key = str(code) if code is not None else "none"
+        """Record one close code, ignoring a socket that reported none.
+
+        Exactly one of the two coroutines that can see a peer's CLOSE frame
+        records it -- whichever reads it first -- so a code of None means the
+        other one already did, not that the close was anonymous. Sockets whose
+        close went unanswered are counted by ``close_unacked`` instead.
+        """
+        if code is None:
+            return
+        key = str(code)
         self.close_codes[key] = self.close_codes.get(key, 0) + 1
 
 

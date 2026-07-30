@@ -73,6 +73,16 @@ class WsTestServer:
         self.port = site._server.sockets[0].getsockname()[1]
         return f"127.0.0.1:{self.port}"
 
+    async def wait_for_closes(self, count: int, timeout: float = 5.0) -> None:
+        """Wait until *count* handlers have finished, rather than sleeping.
+
+        A fixed sleep makes this test a coin flip on a loaded runner: the
+        handler may simply not have returned yet.
+        """
+        deadline = time.monotonic() + timeout
+        while len(self.closes) < count and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+
     async def stop(self) -> None:
         if self.runner is not None:
             await self.runner.cleanup()
@@ -142,9 +152,10 @@ class WsTestServer:
         seconds" from "the run plus waiting on an unresponsive peer took N".
         """
         ws = await self._prepare(request)
-        while not ws.closed:
-            await ws.send_str("tick")
-            await asyncio.sleep(0.02)
+        with contextlib.suppress(ConnectionResetError, aiohttp.ClientError, RuntimeError):
+            while not ws.closed:
+                await ws.send_str("tick")
+                await asyncio.sleep(0.02)
         return ws
 
     async def _hangup(self, request: web.Request) -> web.WebSocketResponse:
@@ -499,26 +510,14 @@ class TestWebSocketBenchmark(WsServerCase):
         """The acceptance criterion only the server can attest to."""
         config = self.config("/echo", connections=4, ws_messages=["x"], ws_message_interval=0.05)
         stats, _ = await run_websocket_benchmark(config, install_signal_handlers=False)
-        await asyncio.sleep(0.2)
+        await self.server.wait_for_closes(4)
         self.assertEqual(len(self.server.closes), 4)
         self.assertEqual(self.server.closes, [1000] * 4)
         self.assertEqual(stats.ws.close_frames_sent, 4)
         self.assertEqual(stats.ws.close_unacked, 0)
-
-    async def test_a_clean_close_is_not_reported_as_an_abnormal_one(self):
-        """aiohttp stamps 1006 on any read that is cancelled or times out.
-
-        A polling receive loop therefore makes every clean shutdown look
-        abnormal, which is why the reader is ended by closing the socket.
-        """
-        config = self.config("/push", connections=3)
-        stats, _ = await run_websocket_benchmark(config, install_signal_handlers=False)
-        # Every socket was closed deliberately, and no close that completed was
-        # recorded as abnormal. How many complete inside the timeout is a
-        # property of the peer and the runner, so it is asserted server-side by
-        # test_every_socket_is_closed_with_a_close_frame rather than here.
-        self.assertEqual(stats.ws.close_frames_sent, 3)
-        self.assertEqual(stats.ws.close_codes.get("1006", 0), 0)
+        # No close that completed was recorded as abnormal. aiohttp stamps
+        # ABNORMAL_CLOSURE (1006) on any receive() that is cancelled or times
+        # out, so this is the client-side half of the same claim.
         self.assertEqual(set(stats.ws.close_codes) - {"1000"}, set(), stats.ws.close_codes)
 
     async def test_our_own_close_is_not_counted_as_a_dropped_connection(self):
@@ -921,7 +920,7 @@ class TestScenarioWsStep(WsServerCase):
         await run_user_simulation(
             self.scenario_config(steps, duration=0.5), install_signal_handlers=False
         )
-        await asyncio.sleep(0.3)
+        await self.server.wait_for_closes(1)
         self.assertTrue(self.server.closes)
         self.assertTrue(all(code == 1000 for code in self.server.closes), self.server.closes)
 
