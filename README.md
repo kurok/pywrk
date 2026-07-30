@@ -38,6 +38,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 
 - **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
 - **Scripted scenarios** (`--scenario`): multi-step flows with variable extraction and `${var}` correlation — log in, capture the token, and hit authenticated endpoints with it
+- **Library API** (`pywrkr.run` / `pywrkr.arun`): pure Python, so load tests live inside pytest suites, notebooks, and CI scripts — typed `Result`, thresholds as verdicts instead of `exit()`
 - **HTTP/2** (`--http2`): protocol-representative load against modern edges, via a pluggable client backend — the negotiated protocol is reported, never assumed
 - **Per-user sessions:** each virtual user keeps its own cookie jar, so cookie-session logins work and N users look like N real clients rather than one anonymous loop
 - **Data-driven testing** (`--data`): CSV/JSON feeders with `loop`/`sequential`/`random`/`unique` strategies plus built-in generators (`${uuid()}`, `${randint()}`, `${counter()}`, …) — 1000 users with 1000 distinct payloads, not 1000 copies of one request
@@ -124,6 +125,101 @@ pywrkr har-import recording.har --no-think-time -o scenario.json               #
 | `--no-think-time` | Don't derive think times from recorded timing |
 | `--think-time-multiplier` | Scale derived think times (default: 1.0) |
 | `--assert-status` | Assert recorded 2xx/3xx status codes |
+
+## Library usage
+
+pywrkr is pure Python, so a load test can live *inside* a pytest suite, a notebook, or an
+orchestration script — no subprocess, no JSON parsing:
+
+```python
+import pywrkr
+
+result = pywrkr.run("https://api.example.com/health", connections=50, duration=30)
+
+assert result.percentiles.p95 < 0.3
+assert result.error_rate < 1.0
+print(f"{result.requests_per_sec:,.0f} req/s over {result.duration:.1f}s")
+```
+
+Nothing is printed, no signal handlers are installed, and a breached threshold comes back as a
+**verdict on the result** rather than an `exit()`:
+
+```python
+result = pywrkr.run(url, duration=30, thresholds=["p95 < 300ms", "error_rate < 1%"])
+for verdict in result.thresholds:
+    print(verdict.expression, "->", "pass" if verdict.passed else "FAIL", verdict.actual)
+if not result.passed:
+    raise SystemExit(result.exit_code)  # same code the CLI would use
+```
+
+**Async-native.** `arun()` never calls `asyncio.run`, so it is safe to await inside an existing
+loop; `run()` raises a clear error if called from one.
+
+```python
+results = await asyncio.gather(
+    pywrkr.arun(url, connections=5, duration=30),
+    pywrkr.arun(url, connections=50, duration=30),
+)
+```
+
+**Full control** via `Config`, which is the same object the CLI builds — anything the CLI can
+express, the library can:
+
+```python
+config = pywrkr.Config(
+    url="https://api.example.com",
+    users=100,
+    ramp_up=10,
+    think_time=0.5,
+    scenario=pywrkr.load_scenario("flow.yaml"),
+)
+result = await pywrkr.arun(config)
+print(result.steps["checkout"]["p95"])
+```
+
+**Live progress** through `on_tick`, called about once a second (an exception from it is logged,
+not fatal):
+
+```python
+pywrkr.run(url, duration=60, on_tick=lambda s: print(s.elapsed, s.requests_per_sec))
+```
+
+### API reference
+
+| Name | What it is |
+|------|-----------|
+| `run(target, **opts) -> Result` | Blocking run. Raises `RuntimeError` inside a running loop |
+| `arun(target, **opts) -> Result` | Async run, awaitable from an existing loop |
+| `Config` | The run configuration (alias of `BenchmarkConfig`) — every CLI option is a field |
+| `Result` | Typed results; see below |
+| `Latency` / `Percentiles` / `ThresholdVerdict` / `LiveStats` | Result components |
+| `load_scenario(path) -> Scenario` | Load a JSON/YAML scenario file |
+
+`target` is a URL string plus keyword options, or a prepared `Config`. `thresholds` accepts
+expression strings (`"p95 < 300ms"`) as well as parsed objects.
+
+`Result` exposes `total_requests`, `total_errors`, `error_rate`, `requests_per_sec`, `duration`,
+`total_bytes`, `latency`, `percentiles`, `status_codes`, `error_types`, `http_versions`,
+`rps_timeline`, `steps`, `thresholds`, `passed`, `exit_code`, and the raw `stats`.
+
+**`result.to_dict()` is exactly what `--json` writes** — same schema, same `schema_version` — so a
+result can be fed straight to `pywrkr compare`, a dashboard, or a golden file. `to_json()`
+serializes it identically.
+
+`percentiles` is both attribute- and key-addressed, so tail percentiles that only exist for large
+samples stay reachable: `result.percentiles.p95`, `result.percentiles["p99.9"]`.
+
+### Stability
+
+`pywrkr.__all__` is the supported surface and is what the versioning promise covers: breaking
+changes to those names require a major release. Everything else is an implementation detail. A
+few worker internals that leaked into the package namespace before this API existed
+(`pywrkr.worker`, `pywrkr.make_url`, …) still import for one more minor release but emit a
+`DeprecationWarning` pointing at `pywrkr.workers`.
+
+The package ships a `py.typed` marker, so type checkers see the annotations.
+
+Runnable examples: [`examples/library_usage.py`](examples/library_usage.py).
 
 ## Requirements
 
