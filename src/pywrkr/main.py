@@ -47,6 +47,7 @@ from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder, validate_unique_capac
 from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
+from pywrkr.streaming import MIN_EXPORT_INTERVAL
 from pywrkr.traffic_profiles import parse_traffic_profile
 from pywrkr.workers import run_autofind, run_benchmark, run_user_simulation
 
@@ -284,6 +285,15 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
         choices=list(COMPARE_FORMATS),
         default="table",
         help="Baseline comparison output format (default: table)",
+    )
+    parser.add_argument(
+        "--export-interval",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Stream metric snapshots to the configured OTel/Prometheus endpoint every "
+        "SECONDS instead of only at the end, so a long run is visible live. Counters "
+        "stay cumulative; percentiles describe the last interval",
     )
     parser.add_argument(
         "--threshold",
@@ -812,6 +822,27 @@ def _validate_url_and_mode(
         _require_http_scheme(parser, args.url, "")
 
 
+def _validate_export_interval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject a streaming interval that cannot do anything useful.
+
+    Both failures are silent no-ops otherwise: an interval with nowhere to push
+    exports nothing, and a sub-second cadence is more load on the collector than
+    signal.
+    """
+    interval = getattr(args, "export_interval", None)
+    if interval is None:
+        return
+    if not (args.otel_endpoint or args.prom_remote_write):
+        parser.error(
+            "--export-interval needs somewhere to export to; add --otel-endpoint "
+            "and/or --prom-remote-write"
+        )
+    if interval < MIN_EXPORT_INTERVAL:
+        parser.error(
+            f"--export-interval must be at least {MIN_EXPORT_INTERVAL:g}s, got {interval:g}s"
+        )
+
+
 def _validate_http2(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject --http2 when the optional backend is not installed.
 
@@ -1076,6 +1107,7 @@ def _parse_and_validate_args(
     """
     _validate_url_and_mode(parser, args)
     _validate_http2(parser, args)
+    _validate_export_interval(parser, args)
 
     duration = _validate_load_params(parser, args)
     body = _resolve_body(parser, args)
@@ -1159,6 +1191,7 @@ def _parse_and_validate_args(
         tags=tags,
         otel_endpoint=args.otel_endpoint,
         prom_remote_write=args.prom_remote_write,
+        export_interval=args.export_interval,
         thresholds=thresholds,
         baseline=args.baseline,
         save_baseline=args.save_baseline,
@@ -1235,6 +1268,10 @@ def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -
             keepalive=config.keepalive,
             ssl_config=config.ssl_config,
             json_output=args.json,
+            tags=config.tags,
+            otel_endpoint=config.otel_endpoint,
+            prom_remote_write=config.prom_remote_write,
+            export_interval=config.export_interval,
         )
         steps = asyncio.run(run_autofind(af_config))
         # Autofind must be usable as a CI gate: exit non-zero when no sustainable

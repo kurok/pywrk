@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import signal
 import tempfile
 import unittest
@@ -357,10 +358,20 @@ class TestApiIntegration(AioHTTPTestCase):
         api_data = (await pywrkr.arun(self._url(), connections=3, duration=1, threads=1)).to_dict()
 
         self.assertEqual(sorted(cli_data), sorted(api_data))
-        for key in ("latency", "percentiles", "config"):
+        # Fixed-shape blocks must match exactly.
+        for key in ("latency", "config"):
             self.assertEqual(sorted(cli_data[key]), sorted(api_data[key]), key)
         self.assertEqual(cli_data["schema_version"], api_data["schema_version"])
         self.assertEqual(cli_data["config"], api_data["config"])
+
+        # Percentiles are compared by vocabulary, not by key set: the tail
+        # percentiles only appear once a run has enough samples to resolve them
+        # (p99.9 needs 1000), so two independently measured runs can honestly
+        # differ there. Asserting equality made this test flaky.
+        for data in (cli_data, api_data):
+            self.assertTrue(all(re.fullmatch(r"p\d+(\.\d+)?", k) for k in data["percentiles"]))
+            for core in ("p50", "p95", "p99"):
+                self.assertIn(core, data["percentiles"])
 
     async def test_result_json_is_loadable_by_the_compare_machinery(self):
         # A Result written to disk must work as a `pywrkr compare` baseline.
