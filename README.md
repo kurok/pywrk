@@ -55,6 +55,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 - **Graceful shutdown:** handles SIGINT/SIGTERM cleanly
 - **Live progress display** with requests/sec, error count, and active user count
 - **SLO-aware thresholds** (`--threshold`): pass/fail criteria like `p95 < 300ms`, `error_rate < 1%` with non-zero exit code on breach — CI-ready
+- **Regression detection** (`pywrkr compare`, `--baseline`): gate a PR on *relative* change — "fail if p95 got 10% worse than main" — with a markdown delta table for the PR comment
 - **Native observability export:** OpenTelemetry (`--otel-endpoint`) and Prometheus remote write (`--prom-remote-write`)
 - **Test metadata tags** (`--tag`): attach environment, build, region labels to metrics and JSON output
 
@@ -229,6 +230,11 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--no-session-cookies` | Ignore `Set-Cookie`. By default each virtual user keeps its own cookie jar |
 | | `--data` | Attach a CSV/JSON data set as `NAME=FILE` (repeatable), referenced as `${NAME.column}`. Requires `--scenario` |
 | | `--data-strategy` | Row hand-out strategy as `NAME=STRATEGY` (repeatable): `loop`, `sequential`, `random`, `unique` |
+| | `--baseline` | Compare against previous `--json` results (file or glob to average) and apply `--fail-on` |
+| | `--save-baseline` | Write this run's results to a file for later `--baseline` comparison |
+| | `--fail-on` | Regression rule on the baseline delta (repeatable), e.g. `"p95 > +10%"`. Exit code 3 when one fires |
+| | `--strict-config` | Fail instead of warning when the baseline used a different load shape |
+| | `--compare-format` | Baseline comparison format: `table` (default), `markdown`, `json` |
 | `-k` | `--keepalive` | Enable keep-alive (default: on) |
 | | `--no-keepalive` | Disable keep-alive |
 | `-l` | `--verify-length` | Verify response Content-Length consistency |
@@ -450,6 +456,92 @@ Those dedicated counters record every occurrence, but the headline `Total Errors
 its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
 
 Working example: [`examples/scenario-correlation.json`](examples/scenario-correlation.json).
+
+### Regression Testing in CI
+
+Absolute gates (`--threshold "p95 < 300ms"`) rot: loose enough never to fire, or tight enough to
+flake on infrastructure noise. What a PR gate usually wants is relative — *"fail if p95 got more
+than 10% worse than the last known-good run"*:
+
+```bash
+# Record a baseline on main
+pywrkr --save-baseline baseline.json -c 100 -d 30 https://api.example.com/
+
+# Gate a PR against it, in one command
+pywrkr --baseline baseline.json \
+       --fail-on "p95 > +10%" --fail-on "rps < -5%" \
+       -c 100 -d 30 https://api.example.com/
+```
+
+Or compare two existing `--json` files after the fact:
+
+```bash
+pywrkr compare baseline.json current.json --fail-on "p95 > +10%"
+```
+
+**`--fail-on` expressions** state the condition under which the gate *fails*, and always compare
+the **delta**, never the raw value:
+
+| Expression | Fails when |
+|------------|-----------|
+| `p95 > +10%` | p95 is more than 10% higher than the baseline |
+| `rps < -5%` | throughput dropped by more than 5% |
+| `p99 > +50ms` | p99 grew by more than 50ms in absolute terms |
+| `error_rate > +0.5` | the error rate rose by more than 0.5 **percentage points** |
+| `step:checkout.mean > +20ms` | that scenario step's mean latency grew by more than 20ms |
+
+Metrics: `rps`, `error_rate`, `total_requests`, `total_errors`, `total_bytes`, `transfer_rate`,
+`duration`, `min_latency`, `max_latency`, `avg_latency`, `median_latency`, `stdev_latency`, any
+percentile (`p50`…`p99.99`), and `step:<name>.<field>`. A `%` suffix makes a rule relative;
+anything else is an absolute delta in the metric's own unit (`ms`/`us`/`s` accepted for latency).
+
+Note the asymmetry for `error_rate`: `+0.5` is half a percentage point, while `+10%` is 10%
+*relative* to the baseline error rate.
+
+**Exit codes:** `0` no regression · `2` an absolute `--threshold` was breached · `3` a `--fail-on`
+rule fired · `1` usage or schema error. When both a threshold and a regression fire, `2` wins.
+
+**Output formats:** `--format markdown` produces a table ready to paste into a PR comment;
+`--format json` gives a machine-readable verdict. (On the main command the flag is
+`--compare-format`.)
+
+**Comparability.** Results carry a `schema_version` and a snapshot of the load shape (mode,
+connections, users, duration, host). Comparing a 10-user run against a 1000-user baseline is
+arithmetically fine and completely meaningless, so `compare` warns when they differ — and fails
+with `--strict-config`.
+
+**Riding out noise.** A single baseline run makes every later run look like a regression when the
+baseline happened to be lucky. Point `--baseline` at a glob to average several:
+
+```bash
+pywrkr compare 'baselines/*.json' current.json --fail-on "p95 > +10%"
+```
+
+A recommended recipe: run 3–5 repetitions, discard the first as warm-up, and keep the rest as the
+baseline set.
+
+#### GitHub Actions
+
+```yaml
+- name: Performance gate
+  run: |
+    pip install pywrkr
+    # Warm-up run, discarded
+    pywrkr -c 50 -d 10 http://localhost:8080/ > /dev/null
+    # Measured run, gated against the committed baseline
+    pywrkr --baseline perf/baseline.json \
+           --fail-on "p95 > +10%" \
+           --fail-on "rps < -5%" \
+           --compare-format markdown \
+           -c 50 -d 30 http://localhost:8080/ | tee perf-report.md
+- name: Comment on the PR
+  if: always() && github.event_name == 'pull_request'
+  run: gh pr comment "${{ github.event.number }}" --body-file perf-report.md
+  env:
+    GH_TOKEN: ${{ github.token }}
+```
+
+The step fails the job on exit code 3, and `perf-report.md` carries the delta table either way.
 
 ### Data-Driven Testing
 

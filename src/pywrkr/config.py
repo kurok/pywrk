@@ -20,6 +20,7 @@ from pywrkr.templating import (
 )
 
 if TYPE_CHECKING:
+    from pywrkr.compare import FailOn
     from pywrkr.feeders import Feeder
     from pywrkr.traffic_profiles import TrafficProfile
 
@@ -429,6 +430,13 @@ class BenchmarkConfig:
     prom_remote_write: str | None = None
     # SLO thresholds
     thresholds: "list[Threshold]" = field(default_factory=list)
+    # Baseline regression gate: compare this run against previous results and
+    # fail on the given deltas.
+    baseline: str | None = None  # path or glob to baseline --json file(s)
+    save_baseline: str | None = None  # write this run's results here
+    fail_on: "list[FailOn]" = field(default_factory=list)
+    strict_config: bool = False  # treat a config mismatch as an error, not a warning
+    compare_format: str = "table"
 
 
 @dataclass
