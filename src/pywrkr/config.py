@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
+from pywrkr.assertions import parse_step_assertions
 from pywrkr.templating import (
     EXTRACT_SOURCES,
     ON_EXTRACT_FAILURE_CHOICES,
@@ -20,6 +21,7 @@ from pywrkr.templating import (
 )
 
 if TYPE_CHECKING:
+    from pywrkr.assertions import StepAssertions
     from pywrkr.compare import FailOn
     from pywrkr.feeders import Feeder
     from pywrkr.traffic_profiles import TrafficProfile
@@ -296,6 +298,10 @@ def merge_stats(all_stats: "list[WorkerStats]") -> "WorkerStats":
                 else:
                     merged.step_latencies[k] = []
             merged.step_latencies[k].extend(v)
+        for k, count in ws.step_errors.items():
+            if k not in merged.step_errors and len(merged.step_errors) >= _MAX_STEP_NAMES:
+                k = "[other steps]"
+            merged.step_errors[k] += count
     merged.latencies = merge_reservoirs([ws.latencies for ws in all_stats], lat_capacity)
     merged.breakdowns = merge_reservoirs([ws.breakdowns for ws in all_stats], bd_capacity)
     return merged
@@ -386,6 +392,9 @@ class WorkerStats:
     extract_failures: int = 0
     template_errors: int = 0
     step_latencies: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+    # Errors attributed to a named scenario step, so the per-step table can show
+    # which step is failing rather than only which is slow.
+    step_errors: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     breakdowns: ReservoirSampler = field(
         default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
     )
@@ -516,6 +525,18 @@ class ScenarioStep:
     # Correlation: variable name -> compiled extraction rule, applied to this
     # step's response so later steps can reference it as ${name}.
     extract: dict[str, Extractor] = field(default_factory=dict)
+    # Every assertion on this step, compiled. Built from the two legacy fields
+    # above when not supplied, so a hand-constructed
+    # ``ScenarioStep(path=..., assert_status=200)`` still asserts.
+    assertions: "StepAssertions" = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.assertions is None:
+            from pywrkr.assertions import StepAssertions
+
+            self.assertions = StepAssertions(
+                status=self.assert_status, body_contains=self.assert_body_contains
+            )
 
 
 @dataclass
@@ -820,6 +841,7 @@ def load_scenario(path: str) -> Scenario:
             )
 
         extract = parse_extract_spec(step_data.get("extract"), f"Step {i}")
+        assertions = parse_step_assertions(step_data, f"Step {i}")
 
         steps.append(
             ScenarioStep(
@@ -834,6 +856,7 @@ def load_scenario(path: str) -> Scenario:
                     "name", f"Step {i + 1}: {step_data.get('method', 'GET')} {step_data['path']}"
                 ),
                 extract=extract,
+                assertions=assertions,
             )
         )
 
