@@ -11,6 +11,7 @@ import os
 import sys
 import time
 
+from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import parse_fail_on
 from pywrkr.config import (
     DEFAULT_CONNECTIONS,
@@ -213,6 +214,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "basic_auth": config.basic_auth,
         "cookies": list(config.cookies),
         "session_cookies": config.session_cookies,
+        "http2": config.http2,
         "verify_content_length": config.verify_content_length,
         "verbosity": config.verbosity,
         "random_param": config.random_param,
@@ -262,6 +264,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         basic_auth=data.get("basic_auth"),
         cookies=data.get("cookies", []),
         session_cookies=data.get("session_cookies", True),
+        http2=data.get("http2", False),
         verify_content_length=data.get("verify_content_length", False),
         verbosity=data.get("verbosity", 0),
         random_param=data.get("random_param", False),
@@ -306,6 +309,7 @@ def _serialize_stats(stats: WorkerStats) -> dict:
         "latencies_total_seen": getattr(stats.latencies, "total_seen", len(stats.latencies)),
         "error_types": dict(stats.error_types),
         "status_codes": {str(k): v for k, v in stats.status_codes.items()},
+        "http_versions": dict(stats.http_versions),
         "rps_timeline": stats.rps_timeline,
         # Previously missing:
         "step_latencies": {k: v for k, v in stats.step_latencies.items()},
@@ -342,6 +346,8 @@ def _deserialize_stats(data: dict) -> WorkerStats:
         ws.error_types[k] = v
     for k, v in data.get("status_codes", {}).items():
         ws.status_codes[int(k)] = v
+    for k, v in data.get("http_versions", {}).items():
+        ws.http_versions[k] = v
     ws.rps_timeline = [tuple(x) for x in data.get("rps_timeline", [])]
     # Previously missing:
     for k, v in data.get("step_latencies", {}).items():
@@ -547,7 +553,12 @@ async def run_master(
                 msg = await asyncio.wait_for(
                     _recv_msg(reader), timeout=max(0.0, deadline - loop.time())
                 )
-                if msg.get("type") == "result":
+                if msg.get("type") == "error":
+                    # A worker refused the run outright (e.g. it lacks the
+                    # HTTP/2 backend). Say why instead of reporting a run that
+                    # quietly had fewer nodes than asked for.
+                    logger.error("  Worker %s refused the run: %s", idx, msg.get("error"))
+                elif msg.get("type") == "result":
                     ws = _deserialize_stats(msg["stats"])
                     all_stats.append(ws)
                     reported = msg.get("duration")
@@ -709,6 +720,26 @@ async def run_worker_node(
 
         config = _deserialize_config(msg["config"])
         logger.info("Worker: received config. Target: %s", config.url)
+
+        # The master decides the protocol, but each worker needs the backend
+        # installed locally. Fail here with the fix, rather than silently
+        # contributing HTTP/1.1 load to what is reported as an HTTP/2 run.
+        if config.http2 and not http2_available():
+            logger.error(
+                "Worker: the master requested --http2, but the HTTP/2 backend is not "
+                "installed on this node. Install it with: %s",
+                HTTP2_INSTALL_HINT,
+            )
+            with contextlib.suppress(OSError, ConnectionError):
+                await _send_msg(
+                    writer,
+                    {
+                        "type": "error",
+                        "error": f"worker lacks the HTTP/2 backend ({HTTP2_INSTALL_HINT})",
+                    },
+                )
+            return
+
         logger.info("Worker: starting benchmark...")
 
         # Measure real wall-clock so the master can report throughput against the

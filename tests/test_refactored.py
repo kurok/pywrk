@@ -14,7 +14,6 @@ import unittest
 from io import StringIO
 from unittest.mock import patch
 
-import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
@@ -345,17 +344,17 @@ class TestCancellationBehavior(AioHTTPTestCase):
         )
         stop_event = asyncio.Event()
 
-        connector = aiohttp.TCPConnector(limit=2)
+        backend = pywrkr.AiohttpBackend(config, 2)
         ws = WorkerStats()
 
         # Start worker and stop it after a brief delay
-        task = asyncio.create_task(pywrkr.worker(config, ws, connector, stop_event))
+        task = asyncio.create_task(pywrkr.worker(config, ws, backend, stop_event))
 
         await asyncio.sleep(0.5)
         stop_event.set()
         _ = await task
 
-        await connector.close()
+        await backend.aclose()
 
         self.assertGreater(ws.total_requests, 0)
 
@@ -373,18 +372,18 @@ class TestCancellationBehavior(AioHTTPTestCase):
 
         active_users = ActiveUsers()
 
-        connector = aiohttp.TCPConnector(limit=1)
+        backend = pywrkr.AiohttpBackend(config, 1)
         ws = WorkerStats()
 
         task = asyncio.create_task(
-            pywrkr.user_worker(0, config, ws, connector, stop_event, time.monotonic(), active_users)
+            pywrkr.user_worker(0, config, ws, backend, stop_event, time.monotonic(), active_users)
         )
 
         await asyncio.sleep(0.5)
         stop_event.set()
         _ = await task
 
-        await connector.close()
+        await backend.aclose()
 
         self.assertGreater(ws.total_requests, 0)
         self.assertEqual(active_users.count, 0, "Active users should be 0 after exit")

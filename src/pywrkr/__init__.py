@@ -17,6 +17,15 @@ __all__ = [
     "validate_scenario_templates",
     "SESSION_CHOICES",
     "SSLConfig",
+    # pywrkr.backends
+    "AiohttpBackend",
+    "Backend",
+    "BackendResponse",
+    "BackendSession",
+    "BackendUnavailableError",
+    "HttpxBackend",
+    "create_backend",
+    "http2_available",
     # pywrkr.compare
     "COMPARE_FORMATS",
     "SCHEMA_VERSION",
@@ -123,6 +132,16 @@ __all__ = [
     "__version__",
 ]
 
+from pywrkr.backends import (
+    AiohttpBackend,
+    Backend,
+    BackendResponse,
+    BackendSession,
+    BackendUnavailableError,
+    HttpxBackend,
+    create_backend,
+    http2_available,
+)
 from pywrkr.compare import (
     COMPARE_FORMATS,
     SCHEMA_VERSION,

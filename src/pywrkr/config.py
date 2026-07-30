@@ -109,6 +109,11 @@ class RequestResult:
     error: str | None = None
 
 
+#: Every phase a backend may report. Kept here rather than in backends.py so
+#: config has no import dependency on it.
+LATENCY_PHASES = ("dns", "connect", "tls", "ttfb", "transfer", "total")
+
+
 @dataclass
 class LatencyBreakdown:
     """Per-request latency breakdown into phases."""
@@ -119,6 +124,10 @@ class LatencyBreakdown:
     ttfb: float = 0.0  # Time to first byte (seconds)
     transfer: float = 0.0  # Response body transfer time (seconds)
     is_reused: bool = False  # True if the connection was reused (DNS/connect/TLS will be 0)
+    # Which phases this sample actually measured. A backend without connection
+    # hooks (httpx) reports a shorter list, so the aggregator can omit those
+    # phases instead of averaging in zeros that never happened.
+    available: tuple[str, ...] = LATENCY_PHASES
 
 
 class ReservoirSampler(list):
@@ -278,6 +287,8 @@ def merge_stats(all_stats: "list[WorkerStats]") -> "WorkerStats":
             merged.error_types[k] += v
         for k, v in ws.status_codes.items():
             merged.status_codes[k] += v
+        for k, v in ws.http_versions.items():
+            merged.http_versions[k] += v
         for k, v in ws.step_latencies.items():
             if k not in merged.step_latencies:
                 if len(merged.step_latencies) >= _MAX_STEP_NAMES:
@@ -361,6 +372,10 @@ class WorkerStats:
         default_factory=lambda: CappedErrorDict(DEFAULT_MAX_ERROR_TYPES)
     )
     status_codes: dict[int, int] = field(default_factory=lambda: defaultdict(int))
+    # Negotiated protocol per response ("1.1", "2", ...). With --http2 against a
+    # server that only offers h1, this is what makes the fallback visible rather
+    # than silently counted as HTTP/2.
+    http_versions: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     latencies: ReservoirSampler = field(
         default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
     )
@@ -395,6 +410,8 @@ class BenchmarkConfig:
     # Honor Set-Cookie per virtual user (jar per VU). False installs a
     # DummyCookieJar so only the static `cookies` header is ever sent.
     session_cookies: bool = True
+    # Use the HTTP/2-capable backend (optional `pywrkr[http2]` extra).
+    http2: bool = False
     verify_content_length: bool = False
     verbosity: int = 0
     csv_output: str | None = None  # file path for CSV percentile output

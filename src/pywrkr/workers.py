@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import ipaddress
 import json
 import logging
 import random
 import signal
-import ssl
 import sys
 import time
 import uuid
@@ -18,6 +16,14 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import aiohttp
 
+from pywrkr.backends import (
+    Backend,
+    BackendSession,
+    build_ssl_context,
+    create_backend,
+    create_cookie_jar,
+    target_is_ip_literal,
+)
 from pywrkr.config import (
     _MAX_STEP_NAMES,
     ActiveUsers,
@@ -67,6 +73,14 @@ logger = logging.getLogger(__name__)
 # Verbosity level tags used in log messages
 _V3_TAG = "[v3]"
 _V4_TAG = "[v4]"
+
+# Exception families the default (aiohttp) backend raises for a failed request.
+# Each backend supplies its own; this is the fallback for direct callers.
+_DEFAULT_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    OSError,
+)
 
 # Progress bar rendering
 _PROGRESS_BAR_WIDTH = 20
@@ -330,27 +344,6 @@ def _build_request_headers(config: BenchmarkConfig) -> dict[str, str]:
     return headers
 
 
-def _create_ssl_context(config: BenchmarkConfig) -> "ssl.SSLContext | None":
-    """Create an SSL context based on the benchmark configuration.
-
-    Returns None for plain HTTP. For HTTPS, creates a context with
-    certificate verification controlled by config.ssl_config.
-    """
-    from urllib.parse import urlparse
-
-    parsed = urlparse(config.url)
-    if parsed.scheme != "https":
-        return None
-
-    ssl_ctx = ssl.create_default_context()
-    if not config.ssl_config.verify:
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-    elif config.ssl_config.ca_bundle:
-        ssl_ctx.load_verify_locations(config.ssl_config.ca_bundle)
-    return ssl_ctx
-
-
 # ---------------------------------------------------------------------------
 # Latency breakdown tracing
 # ---------------------------------------------------------------------------
@@ -502,13 +495,13 @@ class _RequestResult:
 
 
 async def _execute_request(
-    session: aiohttp.ClientSession,
+    session: "BackendSession",
     method: str,
     url: str,
     headers: dict[str, str],
     body: bytes | None,
     ssl_verify: bool,
-    timeout: aiohttp.ClientTimeout,
+    timeout: float,
     stats: WorkerStats,
     config: BenchmarkConfig,
     trace_ctx: dict[str, object] | None,
@@ -518,6 +511,7 @@ async def _execute_request(
     assert_body_contains: str | None = None,
     log_prefix: str = "",
     capture_response: bool = False,
+    transport_errors: tuple[type[BaseException], ...] = _DEFAULT_TRANSPORT_ERRORS,
 ) -> _RequestResult:
     """Execute a single HTTP request and record stats.
 
@@ -526,108 +520,104 @@ async def _execute_request(
     code counting, content-length verification, error handling, and step
     latency tracking.
 
-    The response body is read either way (it always has been — see the
-    ``resp.read()`` below); *capture_response* only controls whether the bytes
-    and headers are handed back to the caller for scenario variable extraction.
+    The request goes through a :class:`~pywrkr.backends.BackendSession`, so the
+    same loop drives HTTP/1.1 and HTTP/2. *transport_errors* comes from the
+    backend, since each client library raises its own exception family.
+
+    The response body is always read; *capture_response* only controls whether
+    the bytes and headers are handed back for scenario variable extraction.
 
     Returns a _RequestResult with outcome details.
     """
     result = _RequestResult()
     req_start = time.monotonic()
     try:
-        async with session.request(
-            method,
-            url,
-            headers=headers,
-            data=body,
-            ssl=ssl_verify,
-            timeout=timeout,
-            trace_request_ctx=trace_ctx,
-        ) as resp:
-            data = await resp.read()
-            latency = time.monotonic() - req_start
-            result.latency = latency
-            result.status = resp.status
-            result.data_len = len(data)
-            if capture_response:
-                result.body = data
-                result.headers = dict(resp.headers)
+        resp = await session.send(method, url, headers, body, timeout, trace_ctx)
+        data = resp.body
+        latency = time.monotonic() - req_start
+        result.latency = latency
+        result.status = resp.status
+        result.data_len = len(data)
+        if capture_response:
+            result.body = data
+            result.headers = dict(resp.headers)
 
-            stats.total_requests += 1
-            stats.total_bytes += len(data)
-            stats.latencies.append(latency)
-            stats.status_codes[resp.status] += 1
-            if step_name:
-                _record_step_latency(stats, step_name, latency)
+        stats.total_requests += 1
+        stats.total_bytes += len(data)
+        stats.latencies.append(latency)
+        stats.status_codes[resp.status] += 1
+        stats.http_versions[resp.http_version] += 1
+        if step_name:
+            _record_step_latency(stats, step_name, latency)
 
-            # Content-length verification (ab -l style).
-            #
-            # ab's -l only checks that the *declared* Content-Length is
-            # consistent across responses; it does NOT require the received
-            # body length to equal the declared value. aiohttp transparently
-            # decompresses gzip/deflate bodies, so ``len(data)`` is the
-            # decompressed size while Content-Length is the on-wire compressed
-            # size -- comparing them would flag every compressed response as an
-            # error. We therefore compare declared values for consistency only.
-            if config.verify_content_length:
-                cl = resp.headers.get("Content-Length")
-                if cl is not None:
-                    try:
-                        declared = int(cl)
-                    except (TypeError, ValueError):
-                        # Malformed Content-Length header: count it and skip
-                        # the comparison rather than letting ValueError escape
-                        # and kill the worker.
+        # Content-length verification (ab -l style).
+        #
+        # ab's -l only checks that the *declared* Content-Length is
+        # consistent across responses; it does NOT require the received
+        # body length to equal the declared value. HTTP clients transparently
+        # decompress gzip/deflate bodies, so ``len(data)`` is the
+        # decompressed size while Content-Length is the on-wire compressed
+        # size -- comparing them would flag every compressed response as an
+        # error. We therefore compare declared values for consistency only.
+        if config.verify_content_length:
+            cl = resp.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    declared = int(cl)
+                except (TypeError, ValueError):
+                    # Malformed Content-Length header: count it and skip
+                    # the comparison rather than letting ValueError escape
+                    # and kill the worker.
+                    stats.content_length_errors += 1
+                else:
+                    if expected_length_ref[0] is None:
+                        expected_length_ref[0] = declared
+                    if declared != expected_length_ref[0]:
                         stats.content_length_errors += 1
-                    else:
-                        if expected_length_ref[0] is None:
-                            expected_length_ref[0] = declared
-                        if declared != expected_length_ref[0]:
-                            stats.content_length_errors += 1
 
-            # Assertion checks (scenario mode)
-            assertion_failed = False
-            if assert_status is not None and resp.status != assert_status:
-                stats.errors += 1
-                err_msg = f"AssertStatus: expected {assert_status}, got {resp.status}"
+        # Assertion checks (scenario mode)
+        assertion_failed = False
+        if assert_status is not None and resp.status != assert_status:
+            stats.errors += 1
+            err_msg = f"AssertStatus: expected {assert_status}, got {resp.status}"
+            stats.error_types[err_msg] += 1
+            assertion_failed = True
+
+        if assert_body_contains is not None:
+            body_text = data.decode("utf-8", errors="replace")
+            if assert_body_contains not in body_text:
+                # Count at most one error per request: if assert_status
+                # already failed, this request is already counted. We still
+                # record the distinct AssertBody diagnostic message.
+                if not assertion_failed:
+                    stats.errors += 1
+                err_msg = f"AssertBody: '{assert_body_contains}' not found"
                 stats.error_types[err_msg] += 1
                 assertion_failed = True
 
-            if assert_body_contains is not None:
-                body_text = data.decode("utf-8", errors="replace")
-                if assert_body_contains not in body_text:
-                    # Count at most one error per request: if assert_status
-                    # already failed, this request is already counted. We still
-                    # record the distinct AssertBody diagnostic message.
-                    if not assertion_failed:
-                        stats.errors += 1
-                    err_msg = f"AssertBody: '{assert_body_contains}' not found"
-                    stats.error_types[err_msg] += 1
-                    assertion_failed = True
+        if not assertion_failed and resp.status >= 400:
+            stats.errors += 1
+            stats.error_types[f"HTTP {resp.status}"] += 1
+            result.counted_error = True
+        else:
+            result.counted_error = assertion_failed
 
-            if not assertion_failed and resp.status >= 400:
-                stats.errors += 1
-                stats.error_types[f"HTTP {resp.status}"] += 1
-                result.counted_error = True
-            else:
-                result.counted_error = assertion_failed
-
-            if config.verbosity >= 4:
-                logger.debug(
-                    "%s %s %s -> %s (%dB, %s)",
-                    _V4_TAG,
-                    method,
-                    url,
-                    resp.status,
-                    len(data),
-                    format_duration(latency),
-                )
-            elif config.verbosity >= 3:
-                logger.debug("%s %s", _V3_TAG, resp.status)
+        if config.verbosity >= 4:
+            logger.debug(
+                "%s %s %s -> %s (%dB, %s)",
+                _V4_TAG,
+                method,
+                url,
+                resp.status,
+                len(data),
+                format_duration(latency),
+            )
+        elif config.verbosity >= 3:
+            logger.debug("%s %s", _V3_TAG, resp.status)
 
     except asyncio.CancelledError:
         result.cancelled = True
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+    except transport_errors as e:
         latency = time.monotonic() - req_start
         result.latency = latency
         error_name = type(e).__name__
@@ -648,54 +638,12 @@ async def _execute_request(
     return result
 
 
-def _target_is_ip_literal(url: str) -> bool:
-    """Return True when *url*'s host is a bare IP address rather than a name.
-
-    aiohttp's default cookie jar refuses to store cookies for IP hosts (the
-    public-suffix rules do not apply to them), which silently breaks cookie
-    sessions against the ``http://127.0.0.1:8080`` targets load tests usually
-    point at. Detecting the case lets the jar be opened up deliberately.
-    """
-    host = urlparse(url).hostname
-    if not host:
-        return False
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return True
-
-
-def _create_cookie_jar(config: BenchmarkConfig) -> "aiohttp.CookieJar | aiohttp.DummyCookieJar":
-    """Build the cookie jar for one virtual user's session.
-
-    ``--no-session-cookies`` yields a ``DummyCookieJar``, which discards every
-    ``Set-Cookie`` so requests carry only the static ``-C`` header — the
-    behaviour to keep when benchmarking a cache or CDN layer, where per-user
-    cookies would fragment the keyspace.
-    """
-    if not config.session_cookies:
-        return aiohttp.DummyCookieJar()
-    return aiohttp.CookieJar(unsafe=_target_is_ip_literal(config.url))
-
-
-def _build_session_kwargs(
-    connector: aiohttp.TCPConnector,
-    config: BenchmarkConfig,
-    stats: WorkerStats,
-    cookie_jar: "aiohttp.CookieJar | aiohttp.DummyCookieJar | None" = None,
-) -> dict:
-    """Build kwargs for aiohttp.ClientSession including optional trace config.
-
-    *cookie_jar* is omitted rather than passed as None when absent, so aiohttp's
-    own default applies and plain benchmark mode keeps its current behaviour.
-    """
-    kwargs: dict = {"connector": connector, "connector_owner": False}
-    if config.latency_breakdown:
-        kwargs["trace_configs"] = [create_trace_config(stats)]
-    if cookie_jar is not None:
-        kwargs["cookie_jar"] = cookie_jar
-    return kwargs
+# Cookie/SSL construction lives with the backends now, since each client library
+# builds them differently. Aliased here because these were part of this module's
+# surface before the split.
+_target_is_ip_literal = target_is_ip_literal
+_create_cookie_jar = create_cookie_jar
+_create_ssl_context = build_ssl_context
 
 
 async def _think_time_wait(
@@ -739,7 +687,7 @@ def _calc_effective_timeout(
 async def worker(
     config: BenchmarkConfig,
     stats: WorkerStats,
-    connector: aiohttp.TCPConnector,
+    backend: Backend,
     stop_event: asyncio.Event,
     request_counter: RequestCounter | None = None,
     rate_limiter: RateLimiter | None = None,
@@ -762,13 +710,11 @@ async def worker(
 
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
-    # Plain mode has no virtual-user identity to isolate, so it keeps aiohttp's
-    # default jar unless cookie sessions were explicitly turned off.
-    jar = None if config.session_cookies else _create_cookie_jar(config)
-    session_kwargs = _build_session_kwargs(connector, config, stats, jar)
-    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    client_timeout = config.timeout_sec
 
-    async with aiohttp.ClientSession(**session_kwargs) as session:
+    # Plain mode has no virtual-user identity to isolate, so it keeps the client
+    # library's default jar unless cookie sessions were explicitly turned off.
+    async with backend.create_session(stats, isolate_cookies=False) as session:
         while not stop_event.is_set():
             if config.duration is not None:
                 elapsed = time.monotonic() - start_time
@@ -786,8 +732,7 @@ async def worker(
                     break
 
             if config.duration is not None:
-                effective_timeout = _calc_effective_timeout(config, start_time)
-                client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+                client_timeout = _calc_effective_timeout(config, start_time)
             request_url = make_url(config.url, config.random_param)
             trace_ctx = {} if config.latency_breakdown else None
 
@@ -803,6 +748,7 @@ async def worker(
                 config,
                 trace_ctx,
                 expected_length_ref,
+                transport_errors=backend.transport_errors,
             )
             if result.cancelled:
                 break
@@ -828,7 +774,7 @@ async def user_worker(
     user_id: int,
     config: BenchmarkConfig,
     stats: WorkerStats,
-    connector: aiohttp.TCPConnector,
+    backend: Backend,
     stop_event: asyncio.Event,
     start_time: float,
     active_users: ActiveUsers,
@@ -845,15 +791,14 @@ async def user_worker(
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
     active_users.count += 1
-    # One jar per virtual user: Set-Cookie from this user's responses is replayed
-    # only to this user, so N VUs look like N distinct clients to the target.
-    session_kwargs = _build_session_kwargs(connector, config, stats, _create_cookie_jar(config))
-    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    client_timeout = config.timeout_sec
     interval_start = start_time
     interval_count = 0
 
     try:
-        async with aiohttp.ClientSession(**session_kwargs) as session:
+        # One jar per virtual user: Set-Cookie from this user's responses is
+        # replayed only to this user, so N VUs look like N distinct clients.
+        async with backend.create_session(stats) as session:
             while not stop_event.is_set():
                 elapsed = time.monotonic() - start_time
                 if config.duration is not None and elapsed >= config.duration:
@@ -870,8 +815,7 @@ async def user_worker(
                         break
 
                 if config.duration is not None:
-                    effective_timeout = _calc_effective_timeout(config, start_time)
-                    client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+                    client_timeout = _calc_effective_timeout(config, start_time)
                 request_url = make_url(config.url, config.random_param)
                 trace_ctx = {} if config.latency_breakdown else None
 
@@ -888,6 +832,7 @@ async def user_worker(
                     trace_ctx,
                     expected_length_ref,
                     log_prefix=f"User {user_id} ",
+                    transport_errors=backend.transport_errors,
                 )
                 if result.cancelled:
                     break
@@ -967,7 +912,7 @@ async def scenario_worker(
     user_id: int,
     config: BenchmarkConfig,
     stats: WorkerStats,
-    connector: aiohttp.TCPConnector,
+    backend: Backend,
     stop_event: asyncio.Event,
     start_time: float,
     active_users: ActiveUsers,
@@ -1004,7 +949,7 @@ async def scenario_worker(
     parsed = urlparse(config.url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     expected_length_ref: list[int | None] = [None]
-    client_timeout = aiohttp.ClientTimeout(total=config.timeout_sec)
+    client_timeout = config.timeout_sec
     interval_start = start_time
     interval_count = 0
 
@@ -1017,9 +962,7 @@ async def scenario_worker(
 
     active_users.count += 1
     try:
-        cookie_jar = _create_cookie_jar(config)
-        session_kwargs = _build_session_kwargs(connector, config, stats, cookie_jar)
-        async with aiohttp.ClientSession(**session_kwargs) as session:
+        async with backend.create_session(stats) as session:
             while not stop_event.is_set():
                 rows = runtime.next_rows()
                 if rows is None:
@@ -1031,7 +974,7 @@ async def scenario_worker(
                     return
                 variables.clear()
                 if fresh_session_per_iteration:
-                    cookie_jar.clear()
+                    session.clear_cookies()
                 iteration_aborted = False
                 # An iteration contributes at most one error to the aggregate
                 # total: a failed request, a failed extraction, and the ${var}
@@ -1065,8 +1008,7 @@ async def scenario_worker(
                             return
 
                     if config.duration is not None:
-                        effective_timeout = _calc_effective_timeout(config, start_time)
-                        client_timeout = aiohttp.ClientTimeout(total=effective_timeout)
+                        client_timeout = _calc_effective_timeout(config, start_time)
 
                     step_name = step.name or f"{step.method} {step.path}"
                     think = step.think_time if step.think_time is not None else scenario.think_time
@@ -1118,6 +1060,7 @@ async def scenario_worker(
                         assert_body_contains=step.assert_body_contains,
                         log_prefix=f"Scenario user {user_id} step '{step_name}' ",
                         capture_response=bool(step.extract),
+                        transport_errors=backend.transport_errors,
                     )
                     if result.cancelled:
                         return
@@ -1280,7 +1223,7 @@ async def _finalize_run(
     tasks: list[asyncio.Task],
     stop_event: asyncio.Event,
     progress_task: asyncio.Task,
-    connector: aiohttp.TCPConnector,
+    backend: Backend,
     all_stats: list[WorkerStats],
     start_time: float,
     config: BenchmarkConfig,
@@ -1321,7 +1264,7 @@ async def _finalize_run(
             progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 _ = await progress_task
-        await connector.close()
+        await backend.aclose()
 
     actual_duration = end_time - start_time
     merged = merge_stats(all_stats)
@@ -1441,16 +1384,10 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     all_stats: list[WorkerStats] = []
     tasks = []
     start_time = time.monotonic()
-    ssl_ctx = _create_ssl_context(config)
     # One runtime for the whole run so row cursors and counters are shared.
     data_runtime = DataRuntime.for_feeders(config.scenario.data if config.scenario else None)
 
-    connector = aiohttp.TCPConnector(
-        limit=config.connections,
-        ssl=ssl_ctx,
-        force_close=not config.keepalive,
-        enable_cleanup_closed=True,
-    )
+    backend = create_backend(config, config.connections)
 
     # Log actual worker distribution across groups
     group_sizes = []
@@ -1471,7 +1408,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                             j,
                             config,
                             ws,
-                            connector,
+                            backend,
                             stop_event,
                             start_time,
                             _active,
@@ -1484,7 +1421,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
             else:
                 tasks.append(
                     asyncio.create_task(
-                        worker(config, ws, connector, stop_event, request_counter, rate_limiter)
+                        worker(config, ws, backend, stop_event, request_counter, rate_limiter)
                     )
                 )
 
@@ -1508,7 +1445,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
         tasks,
         stop_event,
         progress_task,
-        connector,
+        backend,
         all_stats,
         start_time,
         config,
@@ -1582,18 +1519,11 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
 
     rate_limiter = _create_rate_limiter(config, duration)
 
-    ssl_ctx = _create_ssl_context(config)
-
     # Users make sequential requests with think time, so they don't all need
     # a connection simultaneously.  Cap the pool at the configured connections
     # value (defaults to 10) or num_users, whichever is smaller.
     pool_limit = min(num_users, config.connections)
-    connector = aiohttp.TCPConnector(
-        limit=pool_limit,
-        ssl=ssl_ctx,
-        force_close=not config.keepalive,
-        enable_cleanup_closed=True,
-    )
+    backend = create_backend(config, pool_limit)
     logger.debug(
         "User simulation: %d users, pool_limit=%d",
         num_users,
@@ -1621,11 +1551,11 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         quiet=quiet,
     )
 
-    # Guard the window between connector creation and _finalize_run (which
-    # owns connector close + task teardown on normal completion). If this
-    # coroutine is cancelled during ramp-up -- a window that can span seconds
-    # to minutes -- the connector and already-spawned worker tasks would
-    # otherwise be orphaned (leaked sockets, never-cancelled tasks).
+    # Guard the window between backend creation and _finalize_run (which owns
+    # backend close + task teardown on normal completion). If this coroutine is
+    # cancelled during ramp-up -- a window that can span seconds to minutes --
+    # the pool and already-spawned worker tasks would otherwise be orphaned
+    # (leaked sockets, never-cancelled tasks).
     try:
         for i in range(num_users):
             if stop_event.is_set():
@@ -1639,7 +1569,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
                             i,
                             config,
                             ws,
-                            connector,
+                            backend,
                             stop_event,
                             start_time,
                             active_users,
@@ -1656,7 +1586,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
                             i,
                             config,
                             ws,
-                            connector,
+                            backend,
                             stop_event,
                             start_time,
                             active_users,
@@ -1671,7 +1601,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
             tasks,
             stop_event,
             progress_task,
-            connector,
+            backend,
             all_stats,
             start_time,
             config,
@@ -1682,7 +1612,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     except BaseException:
         # Cancellation (or any other failure) before/within _finalize_run:
         # stop and reap outstanding worker tasks, cancel the progress task,
-        # and close the connector if _finalize_run did not already do so.
+        # and close the pool if _finalize_run did not already do so.
         stop_event.set()
         for t in tasks:
             t.cancel()
@@ -1691,8 +1621,8 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
             progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 _ = await progress_task
-        if not connector.closed:
-            await connector.close()
+        # aclose() is idempotent on both backends, so no "already closed" check.
+        await backend.aclose()
         raise
 
 
