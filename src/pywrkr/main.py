@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -24,11 +25,14 @@ from pywrkr.config import (
     DEFAULT_TIMEOUT,
     AutofindConfig,
     BenchmarkConfig,
+    Scenario,
     SSLConfig,
     Threshold,
     load_scenario,
+    validate_scenario_templates,
 )
 from pywrkr.distributed import run_master, run_worker_node
+from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder, validate_unique_capacity
 from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
@@ -291,6 +295,25 @@ def _add_rate_and_traffic_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="FILE",
         help="Path to a JSON/YAML scenario file for scripted multi-step requests",
+    )
+    parser.add_argument(
+        "--data",
+        action="append",
+        default=[],
+        dest="data",
+        metavar="NAME=FILE",
+        help="Attach a CSV/JSON data set to the scenario, referenced as "
+        "${NAME.column} (repeatable). Overrides a set of the same name in the "
+        "scenario file. Requires --scenario",
+    )
+    parser.add_argument(
+        "--data-strategy",
+        action="append",
+        default=[],
+        dest="data_strategies",
+        metavar="NAME=STRATEGY",
+        help=f"How rows are handed out for a data set (repeatable): "
+        f"{', '.join(FEEDER_STRATEGIES)} (default: {FEEDER_STRATEGIES[0]})",
     )
 
 
@@ -789,6 +812,76 @@ def _parse_tags_and_thresholds(
     return tags, thresholds
 
 
+def _split_named_option(parser: argparse.ArgumentParser, raw: str, flag: str) -> tuple[str, str]:
+    """Split a ``NAME=VALUE`` CLI option, erroring out on a malformed one."""
+    if "=" not in raw:
+        parser.error(f"Invalid {flag} value {raw!r} (expected 'NAME=VALUE')")
+    name, value = raw.split("=", 1)
+    name, value = name.strip(), value.strip()
+    if not name or not value:
+        parser.error(f"Invalid {flag} value {raw!r} (expected 'NAME=VALUE')")
+    return name, value
+
+
+def _apply_data_options(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    scenario: "Scenario | None",
+) -> None:
+    """Merge ``--data`` / ``--data-strategy`` into the loaded scenario.
+
+    CLI data sets override same-named ones from the scenario file, and a
+    strategy may be given for a set the file already declares. Everything is
+    resolved here so a bad path or an unknown strategy is a startup error.
+    """
+    data_args = getattr(args, "data", []) or []
+    strategy_args = getattr(args, "data_strategies", []) or []
+    if not data_args and not strategy_args:
+        return
+    if scenario is None:
+        parser.error(
+            "--data/--data-strategy require --scenario: data sets feed "
+            "${name.column} placeholders in scenario steps"
+        )
+
+    strategies: dict[str, str] = {}
+    for raw in strategy_args:
+        name, strategy = _split_named_option(parser, raw, "--data-strategy")
+        strategies[name] = strategy
+
+    for raw in data_args:
+        name, path = _split_named_option(parser, raw, "--data")
+        try:
+            scenario.data[name] = load_feeder(
+                name, path, strategies.pop(name, FEEDER_STRATEGIES[0])
+            )
+        except ValueError as e:
+            parser.error(f"Invalid --data: {e}")
+
+    # Leftover strategies must name a set the scenario file declared, otherwise
+    # the flag silently does nothing.
+    for name, strategy in strategies.items():
+        feeder = scenario.data.get(name)
+        if feeder is None:
+            known = ", ".join(sorted(scenario.data)) or "none"
+            parser.error(
+                f"--data-strategy names unknown data set {name!r} "
+                f"(declared: {known}); add it with --data {name}=FILE"
+            )
+        if strategy not in FEEDER_STRATEGIES:
+            parser.error(
+                f"--data-strategy {name}={strategy!r}: unknown strategy; "
+                f"expected one of {', '.join(FEEDER_STRATEGIES)}"
+            )
+        # Only the strategy changes; the rows are already loaded.
+        scenario.data[name] = dataclasses.replace(feeder, strategy=strategy)
+
+    try:
+        validate_scenario_templates(scenario)
+    except ValueError as e:
+        parser.error(str(e))
+
+
 def _parse_and_validate_args(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -812,6 +905,8 @@ def _parse_and_validate_args(
             scenario = load_scenario(args.scenario)
         except (FileNotFoundError, ValueError, json.JSONDecodeError, ImportError) as e:
             parser.error(f"Invalid --scenario: {e}")
+
+    _apply_data_options(parser, args, scenario)
 
     # Scenario mode: use scenario's base_url as fallback when no positional URL given
     if scenario and args.url is None:
@@ -893,6 +988,21 @@ def _parse_and_validate_args(
         and config.num_requests is None
     ):
         config.duration = 10.0
+
+    if config.scenario is not None and config.scenario.data:
+        # Checked here rather than at scenario load: capacity depends on the
+        # user count, request budget, and worker count, none of which the
+        # scenario file knows.
+        try:
+            validate_unique_capacity(
+                config.scenario.data,
+                config.users,
+                config.num_requests,
+                len(config.scenario.steps),
+                nodes=max(1, getattr(args, "expect_workers", 1) or 1) if args.master else 1,
+            )
+        except ValueError as e:
+            parser.error(str(e))
 
     return config, args
 

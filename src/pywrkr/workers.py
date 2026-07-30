@@ -29,6 +29,7 @@ from pywrkr.config import (
     WorkerStats,
     merge_stats,
 )
+from pywrkr.feeders import DataRuntime
 from pywrkr.reporting import (
     RICH_AVAILABLE,
     _format_latency_short,
@@ -45,6 +46,7 @@ from pywrkr.reporting import (
 )
 from pywrkr.templating import (
     TemplateError,
+    TemplateFunctions,
     apply_extractors,
     substitute,
     substitute_structure,
@@ -929,30 +931,33 @@ def _render_step(
     base_headers: dict[str, str],
     variables: dict[str, str],
     keep_literal: bool,
+    rows: "dict[str, dict[str, str]] | None" = None,
+    functions: "TemplateFunctions | None" = None,
 ) -> tuple[str, dict[str, str], bytes | None]:
-    """Expand ``${var}`` placeholders in one step against the current variables.
+    """Expand placeholders in one step against the user's current bindings.
 
     Substitution covers the path, header names and values, and the body (walking
-    into JSON object/array bodies so placeholders work at any depth).
+    into JSON object/array bodies so placeholders work at any depth), resolving
+    extracted variables, the user's current data rows, and generator functions.
 
     Returns:
         ``(path, headers, body)`` ready to hand to ``_execute_request``.
 
     Raises:
-        TemplateError: A placeholder names an unbound variable and
-            *keep_literal* is False.
+        TemplateError: A placeholder cannot be expanded and *keep_literal* is
+            False.
     """
-    path = substitute(step.path, variables, keep_literal)
+    path = substitute(step.path, variables, keep_literal, rows, functions)
 
     headers = dict(base_headers)
     for key, value in step.headers.items():
-        headers[substitute(key, variables, keep_literal)] = substitute(
-            value, variables, keep_literal
+        headers[substitute(key, variables, keep_literal, rows, functions)] = substitute(
+            value, variables, keep_literal, rows, functions
         )
 
     # substitute() short-circuits on strings without "${", so this stays cheap
     # for the (common) steps that carry no placeholders at all.
-    body = substitute_structure(step.body, variables, keep_literal)
+    body = substitute_structure(step.body, variables, keep_literal, rows, functions)
 
     return path, headers, _prepare_step_body(body, headers)
 
@@ -967,8 +972,15 @@ async def scenario_worker(
     active_users: ActiveUsers,
     request_counter: RequestCounter | None = None,
     rate_limiter: RateLimiter | None = None,
+    data_runtime: "DataRuntime | None" = None,
 ) -> None:
     """Execute a scripted multi-step scenario in a loop.
+
+    *data_runtime* is shared by every virtual user: one row cursor per data set,
+    so ``unique`` really is unique across users, plus the run's generator
+    functions, so ``counter()`` is monotonic across the run. Each iteration draws
+    one row per data set; when a consuming data set runs dry this user stops
+    instead of replaying stale rows.
 
     Variables extracted by a step's ``extract`` rules are bound in a dict that
     is private to this coroutine (i.e. per virtual user) and cleared at the top
@@ -1000,6 +1012,7 @@ async def scenario_worker(
     keep_literal = scenario.on_template_error == "keep_literal"
     abort_on_extract_failure = scenario.on_extract_failure == "abort_iteration"
     fresh_session_per_iteration = scenario.session == "fresh_per_iteration"
+    runtime = data_runtime if data_runtime is not None else DataRuntime.for_feeders(scenario.data)
 
     active_users.count += 1
     try:
@@ -1007,6 +1020,14 @@ async def scenario_worker(
         session_kwargs = _build_session_kwargs(connector, config, stats, cookie_jar)
         async with aiohttp.ClientSession(**session_kwargs) as session:
             while not stop_event.is_set():
+                rows = runtime.next_rows()
+                if rows is None:
+                    logger.info(
+                        "Scenario user %d stopping: data set(s) %s exhausted",
+                        user_id,
+                        ", ".join(runtime.exhausted_feeders) or "unknown",
+                    )
+                    return
                 variables.clear()
                 if fresh_session_per_iteration:
                     cookie_jar.clear()
@@ -1054,7 +1075,12 @@ async def scenario_worker(
 
                     try:
                         step_path, req_headers, body = _render_step(
-                            step, base_headers, variables, keep_literal
+                            step,
+                            base_headers,
+                            variables,
+                            keep_literal,
+                            rows,
+                            runtime.functions,
                         )
                     except TemplateError as exc:
                         stats.template_errors += 1
@@ -1409,6 +1435,8 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
     tasks = []
     start_time = time.monotonic()
     ssl_ctx = _create_ssl_context(config)
+    # One runtime for the whole run so row cursors and counters are shared.
+    data_runtime = DataRuntime.for_feeders(config.scenario.data if config.scenario else None)
 
     connector = aiohttp.TCPConnector(
         limit=config.connections,
@@ -1442,6 +1470,7 @@ async def run_benchmark(config: BenchmarkConfig) -> tuple[WorkerStats, int]:
                             _active,
                             request_counter,
                             rate_limiter,
+                            data_runtime,
                         )
                     )
                 )
@@ -1534,6 +1563,11 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
         if config.random_param:
             logger.info("  Cache-Buster: random _cb= parameter per request")
         logger.info("  Sessions: %s", describe_session_mode(config))
+        if config.scenario is not None and config.scenario.data:
+            for name, feeder in config.scenario.data.items():
+                logger.info(
+                    "  Data: %s -- %d rows, strategy=%s", name, len(feeder.rows), feeder.strategy
+                )
         logger.info("")
 
     stop_event = asyncio.Event()
@@ -1563,6 +1597,9 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
     tasks = []
     active_users = ActiveUsers()
     start_time = time.monotonic()
+    # One runtime for the whole run: row cursors are shared so `unique` is unique
+    # across users, and counter() is monotonic across the run rather than per user.
+    data_runtime = DataRuntime.for_feeders(config.scenario.data if config.scenario else None)
 
     # Ramp-up: stagger user launches
     ramp_delay = config.ramp_up / num_users if config.ramp_up > 0 and num_users > 1 else 0
@@ -1601,6 +1638,7 @@ async def run_user_simulation(config: BenchmarkConfig) -> tuple[WorkerStats, int
                             active_users,
                             None,
                             rate_limiter,
+                            data_runtime,
                         )
                     )
                 )

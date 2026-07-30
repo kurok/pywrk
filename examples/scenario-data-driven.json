@@ -1,0 +1,55 @@
+{
+  "name": "Data-driven login and search",
+  "base_url": "https://api.example.com",
+  "think_time": 0.5,
+  "data": {
+    "users": {
+      "file": "users.csv",
+      "strategy": "unique"
+    }
+  },
+  "steps": [
+    {
+      "name": "login",
+      "method": "POST",
+      "path": "/auth/login",
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "${uuid()}"
+      },
+      "body": {
+        "username": "${users.username}",
+        "password": "${users.password}"
+      },
+      "assert_status": 200,
+      "extract": {
+        "token": { "json": "$.access_token" }
+      }
+    },
+    {
+      "name": "search",
+      "method": "GET",
+      "path": "/search?q=${randstr(8)}&region=${users.region}",
+      "headers": {
+        "Authorization": "Bearer ${token}",
+        "X-Request-Id": "${uuid()}"
+      },
+      "assert_status": 200
+    },
+    {
+      "name": "create-order",
+      "method": "POST",
+      "path": "/orders",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "body": {
+        "reference": "order-${counter(orders)}",
+        "plan": "${users.plan}",
+        "quantity": "${randint(1,5)}",
+        "placed_at": "${now()}"
+      },
+      "assert_status": 201
+    }
+  ]
+}

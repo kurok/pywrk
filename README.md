@@ -39,6 +39,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 - **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
 - **Scripted scenarios** (`--scenario`): multi-step flows with variable extraction and `${var}` correlation — log in, capture the token, and hit authenticated endpoints with it
 - **Per-user sessions:** each virtual user keeps its own cookie jar, so cookie-session logins work and N users look like N real clients rather than one anonymous loop
+- **Data-driven testing** (`--data`): CSV/JSON feeders with `loop`/`sequential`/`random`/`unique` strategies plus built-in generators (`${uuid()}`, `${randint()}`, `${counter()}`, …) — 1000 users with 1000 distinct payloads, not 1000 copies of one request
 - **Five benchmarking modes:**
   - **Duration mode** (`-d`): wrk-style, run for N seconds
   - **Request-count mode** (`-n`): ab-style, send exactly N requests
@@ -226,6 +227,8 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | `-A` | `--basic-auth` | Basic HTTP auth as `user:pass` |
 | `-C` | `--cookie` | Cookie as `name=value` (repeatable) — always sent, in every mode |
 | | `--no-session-cookies` | Ignore `Set-Cookie`. By default each virtual user keeps its own cookie jar |
+| | `--data` | Attach a CSV/JSON data set as `NAME=FILE` (repeatable), referenced as `${NAME.column}`. Requires `--scenario` |
+| | `--data-strategy` | Row hand-out strategy as `NAME=STRATEGY` (repeatable): `loop`, `sequential`, `random`, `unique` |
 | `-k` | `--keepalive` | Enable keep-alive (default: on) |
 | | `--no-keepalive` | Disable keep-alive |
 | `-l` | `--verify-length` | Verify response Content-Length consistency |
@@ -447,6 +450,80 @@ Those dedicated counters record every occurrence, but the headline `Total Errors
 its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
 
 Working example: [`examples/scenario-correlation.json`](examples/scenario-correlation.json).
+
+### Data-Driven Testing
+
+Identical payloads systematically overstate cache performance and understate database and
+session-store load. A scenario can declare named **data sets** so every virtual user works from
+its own row:
+
+```yaml
+data:
+  users:
+    file: users.csv        # or users.json (a list of flat objects)
+    strategy: unique       # loop | sequential | random | unique
+steps:
+  - name: login
+    method: POST
+    path: /auth/login
+    body: '{"user": "${users.username}", "pass": "${users.password}"}'
+```
+
+```bash
+pywrkr --scenario examples/scenario-data-driven.json -u 100 -d 60
+
+# Or attach a data set from the CLI, without touching the scenario file:
+pywrkr --scenario flow.json --data users=users.csv --data-strategy users=unique -u 100 -d 60
+```
+
+Each user draws one row per data set at the **start of every iteration** and references its
+columns as `${dataset.column}`, anywhere templating works — path, headers, and body.
+
+**Strategies** — the cursor is shared by all users in a run, so `unique` really is unique rather
+than unique-per-user:
+
+| Strategy | Behavior |
+|----------|----------|
+| `loop` (default) | Rows handed out round-robin, wrapping around forever |
+| `sequential` | Like `loop`, but users stop when the rows run out |
+| `random` | A uniformly random row per iteration, with replacement |
+| `unique` | Each row used at most once for the whole run; users stop when spent |
+
+`unique` is checked **before the run starts**: if there are fewer rows than the load needs — one
+per virtual user, and one per iteration when `-n` fixes the request count — pywrkr refuses to
+start rather than quietly running short. In distributed mode the master hands each worker a
+disjoint slice of the rows, so `unique` and `sequential` stay globally unique across nodes.
+
+**File format.** CSV needs a header row, which supplies the field names; values are strings. JSON
+must be an array of flat objects; scalars keep their JSON spelling (`true`, not `True`). Relative
+`file:` paths resolve against the scenario file's own directory, so a scenario and its data travel
+together. Rows are read into memory once at startup — fine for the hundreds-of-thousands range,
+but streaming very large files is deliberately not supported.
+
+### Built-in Template Functions
+
+Available anywhere `${...}` works, with no data file needed:
+
+| Function | Expands to |
+|----------|-----------|
+| `${uuid()}` | A random UUID4 |
+| `${randint(1,100)}` | A random integer in the inclusive range |
+| `${randstr(12)}` | A random alphanumeric string of that length |
+| `${counter()}` / `${counter(name)}` | A run-wide counter starting at 1; named counters are independent |
+| `${now()}` / `${now(unix)}` | ISO 8601 UTC timestamp / epoch seconds |
+
+```json
+{ "reference": "order-${counter(orders)}", "id": "${uuid()}", "placed_at": "${now()}" }
+```
+
+Counters are shared across virtual users, so `counter()` is strictly monotonic for the run rather
+than restarting per user. Unknown functions and nonsense arguments (`${randint(9,1)}`) are
+rejected when the scenario file loads, naming the step — not once per request mid-run.
+
+There is deliberately no expression language: no arithmetic, no conditionals, no nesting.
+
+Working example: [`examples/scenario-data-driven.json`](examples/scenario-data-driven.json) with
+[`examples/users.csv`](examples/users.csv).
 
 ### Sessions & Cookies
 

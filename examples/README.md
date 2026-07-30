@@ -167,6 +167,28 @@ pywrkr --scenario examples/scenario-cookie-session.json -u 100 -d 60 --no-sessio
 
 Static `-C` cookies are always sent on top of the jar, in every mode.
 
+### 10. Data-Driven Scenario (CSV feeder + generators)
+
+Log in as a different user on every iteration, driven by a CSV, with generated values for the
+parts that should be unique per request:
+
+```bash
+# 5 users, each consuming one distinct CSV row (strategy: unique)
+pywrkr --scenario examples/scenario-data-driven.json -u 5 -d 30
+
+# Attach the data set from the CLI instead of the scenario file:
+pywrkr --scenario flow.json --data users=examples/users.csv --data-strategy users=loop -u 100 -d 60
+```
+
+**Input files:**
+- [`users.csv`](users.csv) — 5 credentials with `plan` and `region` columns
+- [`scenario-data-driven.json`](scenario-data-driven.json) — login → search → create-order, using
+  `${users.*}` columns plus `${uuid()}`, `${randstr()}`, `${randint()}`, `${counter(orders)}`, and
+  `${now()}`
+
+With `strategy: unique` each row is used at most once for the whole run and users stop once the
+rows are spent, so the run size is bounded by the data. `loop` wraps around instead.
+
 ## Other Traffic Profiles
 
 ```bash

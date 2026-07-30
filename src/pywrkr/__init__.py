@@ -12,13 +12,24 @@ __all__ = [
     "ScenarioStep",
     "Scenario",
     "load_scenario",
+    "parse_data_spec",
     "parse_extract_spec",
+    "validate_scenario_templates",
     "SESSION_CHOICES",
     "SSLConfig",
+    # pywrkr.feeders
+    "FEEDER_STRATEGIES",
+    "DataRuntime",
+    "Feeder",
+    "FeederCursor",
+    "load_feeder",
+    "shard_rows",
+    "validate_unique_capacity",
     # pywrkr.templating
     "Extractor",
     "ExtractError",
     "TemplateError",
+    "TemplateFunctions",
     "apply_extractors",
     "compile_extractor",
     "compile_header_extractor",
@@ -26,6 +37,7 @@ __all__ = [
     "compile_regex_extractor",
     "substitute",
     "substitute_structure",
+    "validate_function_call",
     # pywrkr.traffic_profiles
     "TrafficProfile",
     "SineProfile",
@@ -110,12 +122,23 @@ from pywrkr.config import (
     WorkerStats,
     load_scenario,
     merge_stats,
+    parse_data_spec,
     parse_extract_spec,
+    validate_scenario_templates,
 )
 from pywrkr.distributed import (
     merge_worker_stats,
     run_master,
     run_worker_node,
+)
+from pywrkr.feeders import (
+    FEEDER_STRATEGIES,
+    DataRuntime,
+    Feeder,
+    FeederCursor,
+    load_feeder,
+    shard_rows,
+    validate_unique_capacity,
 )
 from pywrkr.har_import import (
     HarEntry,
@@ -163,6 +186,7 @@ from pywrkr.templating import (
     ExtractError,
     Extractor,
     TemplateError,
+    TemplateFunctions,
     apply_extractors,
     compile_extractor,
     compile_header_extractor,
@@ -170,6 +194,7 @@ from pywrkr.templating import (
     compile_regex_extractor,
     substitute,
     substitute_structure,
+    validate_function_call,
 )
 from pywrkr.traffic_profiles import (
     BusinessHoursProfile,
