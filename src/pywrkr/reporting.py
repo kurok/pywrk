@@ -32,7 +32,7 @@ from pywrkr.config import (
 from pywrkr.traffic_profiles import RateLimiter
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pywrkr.websockets import WsStats
+    from pywrkr.config import WsStats
 
 _logger = logging.getLogger(__name__)
 

@@ -34,19 +34,18 @@ import logging
 import ssl
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 from urllib.parse import urlparse
 
 import aiohttp
 
 from pywrkr.config import (
-    DEFAULT_RESERVOIR_SIZE,
     BenchmarkConfig,
-    ReservoirSampler,
     WorkerStats,
-    merge_reservoirs,
+    WsStats,
     merge_stats,
+    merge_ws_stats,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -80,81 +79,6 @@ DEFAULT_CLOSE_TIMEOUT = 5.0
 def is_websocket_url(url: str) -> bool:
     """True when *url* should be benchmarked as a WebSocket."""
     return urlparse(url).scheme in WS_SCHEMES
-
-
-@dataclass
-class WsStats:
-    """WebSocket-specific counters, carried alongside :class:`WorkerStats`.
-
-    Handshake and round-trip latencies are kept apart even though one of them
-    also lands in ``WorkerStats.latencies``: a run that connects quickly and
-    replies slowly, and one that does the reverse, must not look the same.
-    """
-
-    connections_opened: int = 0
-    connections_failed: int = 0
-    connections_dropped: int = 0
-    reconnects: int = 0
-    peak_concurrent: int = 0
-    messages_sent: int = 0
-    messages_received: int = 0
-    bytes_sent: int = 0
-    bytes_received: int = 0
-    reply_timeouts: int = 0
-    unexpected_replies: int = 0
-    close_frames_sent: int = 0
-    #: Close frames the peer never answered. A server that does not read its
-    #: sockets shows up here rather than as a silent zero.
-    close_unacked: int = 0
-    close_codes: dict[str, int] = field(default_factory=dict)
-    handshake_latencies: ReservoirSampler = field(
-        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
-    )
-    rtt_latencies: ReservoirSampler = field(
-        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
-    )
-    #: "rtt" or "handshake" -- which of the two ``WorkerStats.latencies`` holds.
-    latency_metric: str = "handshake"
-    #: "messages" or "connections" -- what ``total_requests`` counts.
-    primary_metric: str = "connections"
-
-    def record_close(self, code: "int | None") -> None:
-        key = str(code) if code is not None else "none"
-        self.close_codes[key] = self.close_codes.get(key, 0) + 1
-
-
-def merge_ws_stats(all_stats: "Sequence[WsStats]") -> WsStats:
-    """Merge per-socket WebSocket counters into one."""
-    merged = WsStats()
-    if not all_stats:
-        return merged
-    for s in all_stats:
-        merged.connections_opened += s.connections_opened
-        merged.connections_failed += s.connections_failed
-        merged.connections_dropped += s.connections_dropped
-        merged.reconnects += s.reconnects
-        merged.messages_sent += s.messages_sent
-        merged.messages_received += s.messages_received
-        merged.bytes_sent += s.bytes_sent
-        merged.bytes_received += s.bytes_received
-        merged.reply_timeouts += s.reply_timeouts
-        merged.unexpected_replies += s.unexpected_replies
-        merged.close_frames_sent += s.close_frames_sent
-        merged.close_unacked += s.close_unacked
-        for code, count in s.close_codes.items():
-            merged.close_codes[code] = merged.close_codes.get(code, 0) + count
-    # Peak concurrency is a maximum, not a sum: every socket sees the same
-    # shared counter, so adding them would multiply the peak by the fleet size.
-    merged.peak_concurrent = max(s.peak_concurrent for s in all_stats)
-    merged.handshake_latencies = _merge_reservoir([s.handshake_latencies for s in all_stats])
-    merged.rtt_latencies = _merge_reservoir([s.rtt_latencies for s in all_stats])
-    merged.latency_metric = all_stats[0].latency_metric
-    merged.primary_metric = all_stats[0].primary_metric
-    return merged
-
-
-def _merge_reservoir(samplers: "Sequence[ReservoirSampler]") -> ReservoirSampler:
-    return merge_reservoirs(list(samplers), DEFAULT_RESERVOIR_SIZE)
 
 
 def _latency_summary(samples: "Sequence[float]") -> dict:
