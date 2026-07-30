@@ -48,6 +48,18 @@ DEFAULT_MASTER_PORT = 9220
 # while bounding memory usage.  100k entries ≈ 800 KB for floats.
 DEFAULT_RESERVOIR_SIZE = 100_000
 
+# -- WebSocket defaults ------------------------------------------------------
+#: Seconds between sends on one socket. One per second is a realistic
+#: client heartbeat and keeps a 500-socket run from saturating a laptop.
+DEFAULT_WS_MESSAGE_INTERVAL = 1.0
+#: Seconds to wait for the peer's close frame before dropping the transport.
+DEFAULT_WS_CLOSE_TIMEOUT = 5.0
+#: Frame size ceiling. aiohttp's own default; stated here so it is tunable.
+DEFAULT_WS_MAX_MESSAGE_SIZE = 4 * 1024 * 1024
+#: Pause before reopening a socket under --ws-reconnect. Without it a target
+#: that refuses the upgrade turns the run into a reconnect spin loop.
+DEFAULT_WS_RECONNECT_DELAY = 1.0
+
 # Maximum number of unique error type keys tracked per WorkerStats.
 # Once the cap is reached, new error strings are folded into a catch-all key.
 DEFAULT_MAX_ERROR_TYPES = 1_000
@@ -304,6 +316,9 @@ def merge_stats(all_stats: "list[WorkerStats]") -> "WorkerStats":
             merged.step_errors[k] += count
     merged.latencies = merge_reservoirs([ws.latencies for ws in all_stats], lat_capacity)
     merged.breakdowns = merge_reservoirs([ws.breakdowns for ws in all_stats], bd_capacity)
+    ws_parts = [s.ws for s in all_stats if s.ws is not None]
+    if ws_parts:
+        merged.ws = merge_ws_stats(ws_parts)
     return merged
 
 
@@ -368,6 +383,90 @@ class RequestCounter:
 
 
 @dataclass
+class WsStats:
+    """WebSocket-specific counters, carried alongside :class:`WorkerStats`.
+
+    Handshake and round-trip latencies are kept apart even though one of them
+    also lands in ``WorkerStats.latencies``: a run that connects quickly and
+    replies slowly, and one that does the reverse, must not look the same.
+    """
+
+    connections_opened: int = 0
+    connections_failed: int = 0
+    connections_dropped: int = 0
+    reconnects: int = 0
+    peak_concurrent: int = 0
+    messages_sent: int = 0
+    messages_received: int = 0
+    bytes_sent: int = 0
+    bytes_received: int = 0
+    reply_timeouts: int = 0
+    unexpected_replies: int = 0
+    close_frames_sent: int = 0
+    #: Close frames the peer never answered. A server that does not read its
+    #: sockets shows up here rather than as a silent zero.
+    close_unacked: int = 0
+    close_codes: dict[str, int] = field(default_factory=dict)
+    handshake_latencies: ReservoirSampler = field(
+        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
+    )
+    rtt_latencies: ReservoirSampler = field(
+        default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
+    )
+    #: "rtt" or "handshake" -- which of the two ``WorkerStats.latencies`` holds.
+    latency_metric: str = "handshake"
+    #: "messages" or "connections" -- what ``total_requests`` counts.
+    primary_metric: str = "connections"
+
+    def record_close(self, code: "int | None") -> None:
+        """Record one close code, ignoring a socket that reported none.
+
+        Exactly one of the two coroutines that can see a peer's CLOSE frame
+        records it -- whichever reads it first -- so a code of None means the
+        other one already did, not that the close was anonymous. Sockets whose
+        close went unanswered are counted by ``close_unacked`` instead.
+        """
+        if code is None:
+            return
+        key = str(code)
+        self.close_codes[key] = self.close_codes.get(key, 0) + 1
+
+
+def merge_ws_stats(all_stats: "list[WsStats]") -> "WsStats":
+    """Merge per-socket WebSocket counters into one."""
+    merged = WsStats()
+    if not all_stats:
+        return merged
+    for s in all_stats:
+        merged.connections_opened += s.connections_opened
+        merged.connections_failed += s.connections_failed
+        merged.connections_dropped += s.connections_dropped
+        merged.reconnects += s.reconnects
+        merged.messages_sent += s.messages_sent
+        merged.messages_received += s.messages_received
+        merged.bytes_sent += s.bytes_sent
+        merged.bytes_received += s.bytes_received
+        merged.reply_timeouts += s.reply_timeouts
+        merged.unexpected_replies += s.unexpected_replies
+        merged.close_frames_sent += s.close_frames_sent
+        merged.close_unacked += s.close_unacked
+        for code, count in s.close_codes.items():
+            merged.close_codes[code] = merged.close_codes.get(code, 0) + count
+    # Peak concurrency is a maximum, not a sum: every socket sees the same
+    # shared counter, so adding them would multiply the peak by the fleet size.
+    merged.peak_concurrent = max(s.peak_concurrent for s in all_stats)
+    merged.handshake_latencies = _merge_ws_reservoir([s.handshake_latencies for s in all_stats])
+    merged.rtt_latencies = _merge_ws_reservoir([s.rtt_latencies for s in all_stats])
+    merged.latency_metric = all_stats[0].latency_metric
+    merged.primary_metric = all_stats[0].primary_metric
+    return merged
+
+
+def _merge_ws_reservoir(samplers: list) -> "ReservoirSampler":
+    return merge_reservoirs(samplers, DEFAULT_RESERVOIR_SIZE)
+
+
+@dataclass
 class WorkerStats:
     """Aggregated statistics collected by a single worker."""
 
@@ -401,6 +500,11 @@ class WorkerStats:
     # Latencies since the last streaming-export tick. None (the default) means
     # nobody is streaming, and the hot path skips the append entirely.
     window_latencies: "list[float] | None" = None
+    # WebSocket counters, present only on a ws:// run. Kept as a sidecar rather
+    # than folded into the fields above so the HTTP hot path pays nothing and
+    # every downstream consumer (JSON, HTML, compare, exporters) reaches WS
+    # metrics through the same WorkerStats it already handles.
+    ws: "WsStats | None" = None
 
 
 @dataclass
@@ -468,6 +572,31 @@ class BenchmarkConfig:
     fail_on: "list[FailOn]" = field(default_factory=list)
     strict_config: bool = False  # treat a config mismatch as an error, not a warning
     compare_format: str = "table"
+    # WebSocket mode settings; None for an ordinary HTTP run.
+    websocket: "WebSocketConfig | None" = None
+
+
+@dataclass
+class WebSocketConfig:
+    """Everything that only applies to a ``ws://``/``wss://`` run."""
+
+    #: Payloads to send, cycled in order. Empty means "connect and listen",
+    #: which is the shape of a fan-out or connection-capacity test.
+    messages: list[str] = field(default_factory=list)
+    #: Seconds between sends on one socket. 0 sends as fast as the socket takes.
+    message_interval: float = DEFAULT_WS_MESSAGE_INTERVAL
+    #: Wait for a reply to each message and measure the round trip. Without
+    #: this the latency metric is the handshake, not the message.
+    expect_reply: bool = False
+    reply_timeout: float = DEFAULT_TIMEOUT
+    subprotocols: list[str] = field(default_factory=list)
+    #: aiohttp heartbeat: seconds between client pings. None disables them.
+    ping_interval: float | None = None
+    max_message_size: int = DEFAULT_WS_MAX_MESSAGE_SIZE
+    close_timeout: float = DEFAULT_WS_CLOSE_TIMEOUT
+    #: Reopen a socket the server closed, instead of leaving the slot empty.
+    reconnect: bool = False
+    reconnect_delay: float = DEFAULT_WS_RECONNECT_DELAY
 
 
 @dataclass
@@ -541,6 +670,20 @@ class ScenarioStep:
     # above when not supplied, so a hand-constructed
     # ``ScenarioStep(path=..., assert_status=200)`` still asserts.
     assertions: "StepAssertions" = None  # type: ignore[assignment]
+    # -- WebSocket step (``ws:`` in the scenario file) --------------------
+    # A ws:// or wss:// URL turns this into a WebSocket step: open a socket,
+    # optionally send `send`, optionally wait for a message matching
+    # `expect_message_contains`, and hold it open for `hold` seconds. `path`
+    # carries the same value so every existing consumer (naming, per-step
+    # stats, template validation) keeps working unchanged.
+    ws: str | None = None
+    send: str | None = None
+    expect_message_contains: str | None = None
+    hold: float = 0.0
+
+    @property
+    def is_websocket(self) -> bool:
+        return self.ws is not None
 
     def __post_init__(self) -> None:
         if self.assertions is None:
@@ -763,6 +906,60 @@ def validate_scenario_templates(scenario: "Scenario") -> None:
     _validate_step_templates(scenario.steps, scenario.data, strict_datasets=True)
 
 
+def _normalize_ws_step(step_data: dict, index: int) -> dict:
+    """Validate a ``ws:`` step and give it a ``path`` so the rest of the
+    pipeline (naming, per-step stats, ``${var}`` validation) is unchanged.
+
+    HTTP-only keys are rejected rather than ignored: a ``method: POST`` on a
+    WebSocket step that quietly did nothing would be worse than an error.
+    """
+    ws_url = step_data["ws"]
+    if not isinstance(ws_url, str):
+        raise ValueError(f"Step {index} 'ws' must be a string, got {type(ws_url).__name__}")
+    if "path" in step_data and step_data["path"] != ws_url:
+        raise ValueError(f"Step {index} cannot set both 'ws' and a different 'path'")
+
+    for key in ("method", "body", "assert_status", "assert_body_contains"):
+        if key in step_data:
+            raise ValueError(
+                f"Step {index} sets '{key}', which describes an HTTP request and "
+                "does not apply to a 'ws' step"
+            )
+
+    send = step_data.get("send")
+    if send is not None and not isinstance(send, str):
+        raise ValueError(f"Step {index} 'send' must be a string, got {type(send).__name__}")
+
+    expect = step_data.get("expect_message_contains")
+    if expect is not None and not isinstance(expect, str):
+        raise ValueError(
+            f"Step {index} 'expect_message_contains' must be a string, got {type(expect).__name__}"
+        )
+    if expect is not None and send is None:
+        raise ValueError(
+            f"Step {index} sets 'expect_message_contains' without 'send'; there is nothing "
+            "to expect a reply to. Use 'hold' to listen to server-pushed messages instead"
+        )
+
+    hold = step_data.get("hold")
+    if hold is not None and isinstance(hold, str):
+        from pywrkr.assertions import parse_duration
+
+        try:
+            hold = parse_duration(hold, f"Step {index} 'hold'")
+        except ValueError as e:
+            raise ValueError(str(e)) from None
+    if hold is not None and (isinstance(hold, bool) or not isinstance(hold, (int, float))):
+        raise ValueError(f"Step {index} 'hold' must be a duration, got {type(hold).__name__}")
+    if hold is not None and hold < 0:
+        raise ValueError(f"Step {index} 'hold' must be >= 0")
+
+    normalized = dict(step_data)
+    normalized["path"] = ws_url
+    normalized["hold"] = hold
+    return normalized
+
+
 def load_scenario(path: str) -> Scenario:
     """Load a scenario from a JSON or YAML file."""
     logger.debug("Loading scenario from %s", path)
@@ -813,8 +1010,10 @@ def load_scenario(path: str) -> Scenario:
     for i, step_data in enumerate(data["steps"]):
         if not isinstance(step_data, dict):
             raise ValueError(f"Step {i} must be a dict, got {type(step_data).__name__}")
-        if "path" not in step_data:
-            raise ValueError(f"Step {i} must have a 'path' field")
+        if "path" not in step_data and "ws" not in step_data:
+            raise ValueError(f"Step {i} must have a 'path' or 'ws' field")
+        if "ws" in step_data:
+            step_data = _normalize_ws_step(step_data, i)
 
         # Validate value types before constructing the step so configuration
         # errors are reported clearly at load time instead of crashing deep in
@@ -869,6 +1068,10 @@ def load_scenario(path: str) -> Scenario:
                 ),
                 extract=extract,
                 assertions=assertions,
+                ws=step_data.get("ws"),
+                send=step_data.get("send"),
+                expect_message_contains=step_data.get("expect_message_contains"),
+                hold=step_data.get("hold", 0.0) or 0.0,
             )
         )
 

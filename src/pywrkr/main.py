@@ -36,11 +36,16 @@ from pywrkr.config import (
     DEFAULT_MASTER_PORT,
     DEFAULT_THREADS,
     DEFAULT_TIMEOUT,
+    DEFAULT_WS_CLOSE_TIMEOUT,
+    DEFAULT_WS_MAX_MESSAGE_SIZE,
+    DEFAULT_WS_MESSAGE_INTERVAL,
+    DEFAULT_WS_RECONNECT_DELAY,
     AutofindConfig,
     BenchmarkConfig,
     Scenario,
     SSLConfig,
     Threshold,
+    WebSocketConfig,
     load_scenario,
     validate_scenario_templates,
 )
@@ -51,6 +56,7 @@ from pywrkr.multi_url import load_url_file, run_multi_url
 from pywrkr.reporting import parse_threshold
 from pywrkr.streaming import MIN_EXPORT_INTERVAL
 from pywrkr.traffic_profiles import parse_traffic_profile
+from pywrkr.websockets import WS_SCHEMES, is_websocket_url, run_websocket_benchmark
 from pywrkr.workers import run_autofind, run_benchmark, run_user_simulation
 
 logger = logging.getLogger(__name__)
@@ -782,6 +788,82 @@ def _run_summary(args: argparse.Namespace) -> None:
         sys.exit(EXIT_REGRESSION)
 
 
+def _add_websocket_options(parser: argparse.ArgumentParser) -> None:
+    """Options that only apply to ``ws://``/``wss://`` targets."""
+    group = parser.add_argument_group("websocket options (ws:// and wss:// targets)")
+    group.add_argument(
+        "--ws-message",
+        action="append",
+        default=[],
+        dest="ws_messages",
+        metavar="TEXT",
+        help="Payload to send on each socket; repeat to cycle several. "
+        "Without any, the run connects and listens (connection/fan-out test)",
+    )
+    group.add_argument(
+        "--ws-message-interval",
+        type=float,
+        default=DEFAULT_WS_MESSAGE_INTERVAL,
+        metavar="SECONDS",
+        help=f"Seconds between sends on one socket (default: {DEFAULT_WS_MESSAGE_INTERVAL}); "
+        "0 sends as fast as the socket allows",
+    )
+    group.add_argument(
+        "--ws-expect-reply",
+        action="store_true",
+        help="Wait for a reply to each message and report round-trip latency. "
+        "Without this the reported latency is the handshake",
+    )
+    group.add_argument(
+        "--ws-reply-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Seconds to wait for a reply (default: --timeout)",
+    )
+    group.add_argument(
+        "--ws-subprotocol",
+        action="append",
+        default=[],
+        dest="ws_subprotocols",
+        metavar="NAME",
+        help="Sec-WebSocket-Protocol to offer; repeatable",
+    )
+    group.add_argument(
+        "--ws-ping-interval",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Send a ping every SECONDS to keep idle sockets alive",
+    )
+    group.add_argument(
+        "--ws-max-message-size",
+        type=int,
+        default=DEFAULT_WS_MAX_MESSAGE_SIZE,
+        metavar="BYTES",
+        help=f"Reject frames larger than this (default: {DEFAULT_WS_MAX_MESSAGE_SIZE})",
+    )
+    group.add_argument(
+        "--ws-close-timeout",
+        type=float,
+        default=DEFAULT_WS_CLOSE_TIMEOUT,
+        metavar="SECONDS",
+        help=f"Seconds to wait for the peer's close frame (default: {DEFAULT_WS_CLOSE_TIMEOUT})",
+    )
+    group.add_argument(
+        "--ws-reconnect",
+        action="store_true",
+        help="Reopen a socket the server closed instead of leaving the slot empty",
+    )
+    group.add_argument(
+        "--ws-reconnect-delay",
+        type=float,
+        default=DEFAULT_WS_RECONNECT_DELAY,
+        metavar="SECONDS",
+        help=f"Pause before reconnecting (default: {DEFAULT_WS_RECONNECT_DELAY})",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -809,6 +891,10 @@ Examples:
   %(prog)s -R -c 100 -d 10 http://localhost:8080/
   %(prog)s -R -u 300 -d 300 --think-time 1.0 https://example.com/
 
+  # WebSocket: 500 sockets, one message each per second, measure round-trip:
+  %(prog)s wss://ws.example.com/feed -c 500 -d 60 \\
+      --ws-message '{"op":"ping"}' --ws-message-interval 1 --ws-expect-reply
+
   # HAR import: convert browser recording to scenario:
   %(prog)s har-import recording.har -o scenario.json
   %(prog)s har-import recording.har --format url-file -o urls.txt
@@ -820,6 +906,7 @@ Examples:
     _add_rate_and_traffic_options(parser)
     _add_autofind_options(parser)
     _add_distributed_options(parser)
+    _add_websocket_options(parser)
     return parser
 
 
@@ -827,15 +914,106 @@ def _require_http_scheme(
     parser: argparse.ArgumentParser,
     url: str,
     context: str,
+    allow_websocket: bool = False,
 ) -> None:
-    """Reject any URL whose scheme is not http(s).
+    """Reject any URL whose scheme is not http(s), or ws(s) where allowed.
 
     ``context`` is woven into the error message so the user knows which input
     was rejected (positional URL, url-file entry, or scenario base_url).
+    WebSocket URLs are accepted only for the positional target: a url-file or a
+    scenario ``base_url`` drives the HTTP path, where a ws:// scheme would fail
+    later and less clearly.
     """
+    allowed = ("http", "https") + (WS_SCHEMES if allow_websocket else ())
     scheme = urlparse(url).scheme
-    if scheme not in ("http", "https"):
-        parser.error(f"Invalid URL scheme{context}: {url}. Use http:// or https://")
+    if scheme not in allowed:
+        wanted = "http://, https://, ws:// or wss://" if allow_websocket else "http:// or https://"
+        parser.error(f"Invalid URL scheme{context}: {url}. Use {wanted}")
+
+
+#: Flags that describe an HTTP request/response exchange and have no WebSocket
+#: meaning. Silently ignoring them would let ``-m POST`` look like it did
+#: something. Each entry is (argparse dest, user-facing flag, default).
+_HTTP_ONLY_IN_WS_MODE = (
+    ("method", "-m/--method", "GET"),
+    ("body", "-b/--body", None),
+    ("post_file", "-p/--post-file", None),
+    ("num_requests", "-n/--num-requests", None),
+    ("http2", "--http2", False),
+    ("latency_breakdown", "--latency-breakdown", False),
+    ("random_param", "-R/--random-param", False),
+    ("verify_length", "-l/--verify-length", False),
+    ("rate", "--rate", None),
+    ("rate_ramp", "--rate-ramp", None),
+    ("traffic_profile", "--traffic-profile", None),
+    ("users", "-u/--users", None),
+    ("cookies", "-C/--cookies", None),
+)
+
+#: Whole modes that are not implemented over WebSockets. Rejected up front
+#: rather than half-working: a distributed WS run needs a wire-protocol change,
+#: and autofind ramps virtual users, which WS mode does not have.
+_MODES_UNSUPPORTED_IN_WS = (
+    ("autofind", "--autofind"),
+    ("master", "--master"),
+    ("url_file", "--url-file"),
+    ("scenario", "--scenario"),
+)
+
+
+def _validate_websocket_mode(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    """Reject HTTP-only flags and unsupported modes against a ws:// target."""
+    for dest, flag in _MODES_UNSUPPORTED_IN_WS:
+        if getattr(args, dest, None):
+            parser.error(
+                f"{flag} is not supported for ws:// or wss:// targets. "
+                "Use a scenario `ws:` step for mixed HTTP/WebSocket flows"
+            )
+
+    rejected = [
+        flag
+        for dest, flag, default in _HTTP_ONLY_IN_WS_MODE
+        if getattr(args, dest, default) not in (default, [] if default is None else default)
+    ]
+    if rejected:
+        parser.error(
+            f"{', '.join(rejected)} describe an HTTP request and do not apply to a "
+            "ws:// or wss:// target"
+        )
+
+    if args.ws_message_interval < 0:
+        parser.error("--ws-message-interval must be >= 0")
+    if args.ws_reply_timeout is not None and args.ws_reply_timeout <= 0:
+        parser.error("--ws-reply-timeout must be > 0")
+    if args.ws_ping_interval is not None and args.ws_ping_interval <= 0:
+        parser.error("--ws-ping-interval must be > 0")
+    if args.ws_max_message_size <= 0:
+        parser.error("--ws-max-message-size must be > 0")
+    if args.ws_close_timeout <= 0:
+        parser.error("--ws-close-timeout must be > 0")
+    if args.ws_expect_reply and not args.ws_messages:
+        parser.error("--ws-expect-reply needs at least one --ws-message to reply to")
+
+
+def _websocket_flags_used(args: argparse.Namespace) -> list[str]:
+    """WebSocket flags the user set on a non-WebSocket target."""
+    used = []
+    if args.ws_messages:
+        used.append("--ws-message")
+    if args.ws_subprotocols:
+        used.append("--ws-subprotocol")
+    if args.ws_expect_reply:
+        used.append("--ws-expect-reply")
+    if args.ws_reconnect:
+        used.append("--ws-reconnect")
+    if args.ws_reply_timeout is not None:
+        used.append("--ws-reply-timeout")
+    if args.ws_ping_interval is not None:
+        used.append("--ws-ping-interval")
+    return used
 
 
 def _validate_mode_conflicts(
@@ -931,7 +1109,9 @@ def _validate_url_and_mode(
         parser.error("the following arguments are required: url (or --url-file or --scenario)")
 
     if args.url is not None:
-        _require_http_scheme(parser, args.url, "")
+        _require_http_scheme(parser, args.url, "", allow_websocket=True)
+        if is_websocket_url(args.url):
+            _validate_websocket_mode(parser, args)
 
 
 def _validate_export_interval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -1310,6 +1490,7 @@ def _parse_and_validate_args(
         fail_on=_parse_baseline_options(parser, args),
         strict_config=args.strict_config,
         compare_format=args.compare_format,
+        websocket=_build_websocket_config(parser, args),
     )
 
     _validate_rate_and_traffic(parser, args, config)
@@ -1341,9 +1522,42 @@ def _parse_and_validate_args(
     return config, args
 
 
+def _build_websocket_config(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> "WebSocketConfig | None":
+    """Assemble the WebSocket settings, or None for an ordinary HTTP run.
+
+    A ``--ws-*`` flag on an http:// target is an error rather than a no-op:
+    silently ignoring it is how a run ends up not testing what was asked for.
+    """
+    if args.url is None or not is_websocket_url(args.url):
+        used = _websocket_flags_used(args)
+        if used:
+            parser.error(f"{', '.join(used)} only apply to a ws:// or wss:// target")
+        return None
+    return WebSocketConfig(
+        messages=list(args.ws_messages),
+        message_interval=args.ws_message_interval,
+        expect_reply=args.ws_expect_reply,
+        reply_timeout=(
+            args.ws_reply_timeout if args.ws_reply_timeout is not None else args.timeout
+        ),
+        subprotocols=list(args.ws_subprotocols),
+        ping_interval=args.ws_ping_interval,
+        max_message_size=args.ws_max_message_size,
+        close_timeout=args.ws_close_timeout,
+        reconnect=args.ws_reconnect,
+        reconnect_delay=args.ws_reconnect_delay,
+    )
+
+
 def _determine_and_run_mode(config: BenchmarkConfig, args: argparse.Namespace) -> None:
     """Determine which mode to run and execute."""
-    if args.url_file is not None:
+    if config.websocket is not None:
+        _, exit_code = asyncio.run(run_websocket_benchmark(config))
+        sys.exit(exit_code)
+    elif args.url_file is not None:
         # Reuse the entries parsed during validation (see _validate_url_and_mode)
         # to avoid a redundant re-parse and the TOCTOU window. Fall back to a
         # fresh parse only if validation did not run (e.g. direct unit calls).

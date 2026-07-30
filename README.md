@@ -802,6 +802,123 @@ pywrkr summary results.json \
 It re-reads the results file rather than re-running anything, and exits `0` / `2` / `3` on the same
 rules as the main command.
 
+### WebSocket Benchmarking
+
+Real-time features — chat, live dashboards, trading feeds, collaborative editing — ride on
+WebSockets, and what matters about their load is invisible to a request/response benchmarker: a
+connection storm, how many sockets a server holds open, how long a message takes to come back on a
+socket that is already established. A `ws://` or `wss://` URL switches modes automatically:
+
+```bash
+# 500 sockets, each sending a message every second for 60s, measuring round-trip latency
+pywrkr wss://ws.example.com/feed -c 500 -d 60 \
+       --ws-message '{"op":"ping"}' --ws-message-interval 1 --ws-expect-reply
+
+# Connection storm: open 1000 sockets over 30s and hold them, counting server pushes
+pywrkr wss://ws.example.com/feed -c 1000 -d 300 --ramp-up 30
+```
+
+`-c` is concurrent sockets, `-d` is how long to hold them, and `--ramp-up` staggers the handshakes
+so a connection storm has the shape you asked for instead of arriving all at once.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--ws-message TEXT` | — | Payload to send; repeat to cycle several. Without any, the run connects and listens |
+| `--ws-message-interval S` | `1.0` | Seconds between sends on one socket; `0` sends as fast as the socket allows |
+| `--ws-expect-reply` | off | Wait for a reply to each message and report round-trip latency |
+| `--ws-reply-timeout S` | `--timeout` | How long to wait for that reply |
+| `--ws-subprotocol NAME` | — | `Sec-WebSocket-Protocol` to offer; repeatable |
+| `--ws-ping-interval S` | off | Send a ping every S seconds to keep idle sockets alive |
+| `--ws-max-message-size B` | 4 MiB | Reject frames larger than this |
+| `--ws-close-timeout S` | `5.0` | How long to wait for the peer's close frame |
+| `--ws-reconnect` | off | Reopen a socket the server closed instead of leaving the slot empty |
+| `--ws-reconnect-delay S` | `1.0` | Pause before reconnecting |
+
+**Which number is the latency?** Stated explicitly rather than left to be inferred, both in the
+terminal output and as `websocket.latency_metric` in `--json`:
+
+- With `--ws-expect-reply`, the run's latency — and therefore `--threshold "p95 < 100ms"` — is the
+  **message round-trip time**.
+- Without it, there is no reply to time, so the latency is the **handshake**.
+
+Handshake and round-trip latency are *also* always reported separately, because a service that
+connects instantly and answers slowly and one that does the reverse are different problems that a
+single latency line cannot tell apart.
+
+Likewise, `requests_per_sec` counts messages when there are messages to send and connections
+otherwise; `websocket.primary_metric` says which.
+
+**What is reported.** On top of the usual percentile/threshold/JSON/HTML machinery, `--json` gains
+a `websocket` block:
+
+```json
+{
+  "websocket": {
+    "latency_metric": "rtt",
+    "primary_metric": "messages",
+    "connections": {"opened": 500, "failed": 0, "dropped": 3, "reconnects": 0,
+                    "peak_concurrent": 500},
+    "messages": {"sent": 29847, "received": 29844, "sent_per_sec": 497.45,
+                 "received_per_sec": 497.40, "bytes_sent": 447705,
+                 "bytes_received": 1790640, "reply_timeouts": 3,
+                 "unexpected_replies": 0},
+    "handshake": {"count": 500, "min": 0.0012, "max": 0.041, "mean": 0.0089,
+                  "percentiles": {"p50": 0.0081, "p95": 0.0223, "p99": 0.0388}},
+    "rtt":       {"count": 29844, "min": 0.0004, "max": 0.112, "mean": 0.0021,
+                  "percentiles": {"p50": 0.0018, "p95": 0.0044, "p99": 0.0091}},
+    "close": {"frames_sent": 500, "unacknowledged": 0, "codes": {"1000": 500}}
+  }
+}
+```
+
+`close.unacknowledged` counts sockets whose close frame the server never answered — a server that
+does not read its sockets shows up here instead of as a silent zero.
+
+**Clean shutdown.** Every socket is closed with a close frame, on normal completion and on
+`Ctrl-C` alike, so a benchmark does not leave the server holding thousands of half-open connections
+that poison whatever you measure next. That teardown is deliberately excluded from the reported
+duration: waiting on an unresponsive peer is not load, and counting it would deflate every rate
+derived from it.
+
+`wss://` uses the same TLS settings as `https://` — `--ssl-verify` and `--ca-bundle` behave
+identically.
+
+#### Mixed HTTP + WebSocket scenarios
+
+A `ws:` step in a scenario opens a socket on the *same session* as the HTTP steps around it, so it
+inherits their cookies, and `${var}` correlation works across the protocol boundary:
+
+```json
+{
+  "steps": [
+    {"name": "login", "path": "/api/login", "method": "POST",
+     "extract": {"token": {"json": "$.token"}}},
+    {"name": "subscribe", "ws": "wss://ws.example.com/feed?auth=${token}",
+     "send": "{\"op\":\"subscribe\",\"channel\":\"orders\"}",
+     "expect_message_contains": "\"subscribed\"",
+     "hold": "30s",
+     "extract": {"sid": {"json": "$.sid"}}}
+  ]
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `ws` | The `ws://`/`wss://` URL. Absolute — `base_url` is not prepended. Templated. |
+| `send` | Payload to send once the socket is open. Templated. |
+| `expect_message_contains` | Wait for a message containing this substring. Scans every arriving message, not just the first, so a confirmation behind a welcome frame or a heartbeat still matches. Its text is what the step's `extract` rules run against. |
+| `hold` | Keep the socket open afterwards (`"30s"`, `"250ms"`, or a bare number of seconds), counting what the server pushes. |
+
+The step's latency is the whole thing — handshake, send, and the wait for the expected message —
+because that is what a user of a "subscribe and get the first update" flow actually waits for.
+`hold` afterwards is passive listening and is not counted in it. HTTP-only keys (`method`, `body`,
+`assert_status`) are rejected on a `ws:` step rather than silently ignored.
+
+See [`examples/scenario-websocket.json`](examples/scenario-websocket.json).
+
+**Not supported yet:** distributed WebSocket mode (`--master` rejects a `ws://` target; a mixed
+HTTP/WebSocket *scenario* does run distributed), Socket.IO/SockJS protocol layers, and gRPC/SSE.
+
 ### Data-Driven Testing
 
 Identical payloads systematically overstate cache performance and understate database and
