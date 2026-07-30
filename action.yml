@@ -1,0 +1,258 @@
+name: pywrkr benchmark
+description: >-
+  Run an HTTP benchmark, gate the build on latency/error thresholds, compare
+  against a stored baseline, and report the result on the job summary and PR.
+author: pywrkr
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  url:
+    description: Target URL to benchmark. Omit only when `args` supplies its own target.
+    required: false
+    default: ""
+  args:
+    description: >-
+      Extra pywrkr CLI arguments, e.g. "-d 30 -c 50 --rate 200". Parsed with
+      shell-like quoting rules, not evaluated by a shell.
+    required: false
+    default: ""
+  thresholds:
+    description: >-
+      Pass/fail thresholds, one per line, e.g. "p95 < 500ms". A metric the run
+      did not produce counts as a failure, not a pass.
+    required: false
+    default: ""
+  baseline:
+    description: Baseline results file or glob to compare this run against.
+    required: false
+    default: ""
+  fail-on:
+    description: >-
+      Regression rules against the baseline, one per line, e.g. "p95 > +10%".
+      Requires `baseline`.
+    required: false
+    default: ""
+  save-baseline:
+    description: Write this run's results here as well, to be committed or cached as the new baseline.
+    required: false
+    default: ""
+  version:
+    description: >-
+      pywrkr version to install (a PEP 440 specifier such as "1.2.3"), "latest",
+      or "local" to install from the checked-out working tree.
+    required: false
+    default: latest
+  comment-pr:
+    description: Post the report as a PR comment, editing the previous one in place.
+    required: false
+    default: "false"
+  github-token:
+    description: "Token used for the PR comment. Needs `pull-requests: write` permission."
+    required: false
+    default: ${{ github.token }}
+  soft-fail:
+    description: >-
+      Report thresholds and regressions but never fail the step. The outputs
+      still say what happened, so a caller can decide for itself.
+    required: false
+    default: "false"
+  html-report:
+    description: Also write a standalone HTML report here.
+    required: false
+    default: ""
+  results-file:
+    description: Where to write the JSON results.
+    required: false
+    default: pywrkr-results.json
+  summary-file:
+    description: Where to write the rendered markdown report.
+    required: false
+    default: pywrkr-report.md
+  title:
+    description: Heading used in the report.
+    required: false
+    default: pywrkr performance report
+  job-summary:
+    description: Append the report to the GitHub job summary.
+    required: false
+    default: "true"
+
+outputs:
+  passed:
+    description: '"true" when every threshold passed.'
+    value: ${{ steps.summary.outputs.passed }}
+  p50:
+    description: Median latency in seconds.
+    value: ${{ steps.summary.outputs.p50 }}
+  p95:
+    description: 95th percentile latency in seconds.
+    value: ${{ steps.summary.outputs.p95 }}
+  p99:
+    description: 99th percentile latency in seconds.
+    value: ${{ steps.summary.outputs.p99 }}
+  rps:
+    description: Achieved requests per second.
+    value: ${{ steps.summary.outputs.rps }}
+  error-rate:
+    description: Error rate as a percentage.
+    value: ${{ steps.summary.outputs.error_rate }}
+  total-requests:
+    description: Total requests completed.
+    value: ${{ steps.summary.outputs.total_requests }}
+  results-file:
+    description: Path to the JSON results file.
+    value: ${{ steps.run.outputs.results-file }}
+  summary-file:
+    description: Path to the rendered markdown report.
+    value: ${{ steps.summary.outputs.summary-file }}
+  verdict:
+    description: '"pass", "threshold", "regression", or "error".'
+    value: ${{ steps.summary.outputs.verdict }}
+
+# No `uses:` anywhere below. A composite action inherits its dependencies to
+# every repository that consumes it, so this one installs pywrkr into a private
+# venv with the runner's own Python rather than pulling in setup-python. Every
+# input reaches a script through the environment; none is interpolated into a
+# `run:` body, which would be a shell injection on any repo that lets an
+# untrusted PR set it.
+runs:
+  using: composite
+  steps:
+    - name: Install pywrkr
+      shell: bash
+      env:
+        PYWRKR_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        VENV="${RUNNER_TEMP}/pywrkr-venv"
+        python3 -m venv "$VENV"
+        "$VENV/bin/python" -m pip install --quiet --upgrade pip
+        case "$PYWRKR_VERSION" in
+          latest|"") "$VENV/bin/python" -m pip install --quiet "pywrkr" ;;
+          local|.)   "$VENV/bin/python" -m pip install --quiet "${GITHUB_WORKSPACE}" ;;
+          *)         "$VENV/bin/python" -m pip install --quiet "pywrkr==${PYWRKR_VERSION}" ;;
+        esac
+        echo "PYWRKR_BIN=$VENV/bin/pywrkr" >> "$GITHUB_ENV"
+        echo "PYWRKR_PY=$VENV/bin/python" >> "$GITHUB_ENV"
+        echo "pywrkr $("$VENV/bin/python" -c 'import pywrkr; print(pywrkr.__version__)')"
+
+    - name: Run benchmark
+      id: run
+      shell: bash
+      env:
+        PYWRKR_URL: ${{ inputs.url }}
+        PYWRKR_ARGS: ${{ inputs.args }}
+        RESULTS_FILE: ${{ inputs.results-file }}
+        SAVE_BASELINE: ${{ inputs.save-baseline }}
+        HTML_REPORT: ${{ inputs.html-report }}
+      run: |
+        set -euo pipefail
+        CMD=("$PYWRKR_BIN")
+        if [ -n "$PYWRKR_URL" ]; then CMD+=("$PYWRKR_URL"); fi
+        # shlex, not the shell: `args` must never be re-parsed as code.
+        while IFS= read -r token; do
+          if [ -n "$token" ]; then CMD+=("$token"); fi
+        done < <("$PYWRKR_PY" -c 'import os,shlex;print("\n".join(shlex.split(os.environ["PYWRKR_ARGS"])))')
+        CMD+=(--json "$RESULTS_FILE")
+        if [ -n "$SAVE_BASELINE" ]; then CMD+=(--save-baseline "$SAVE_BASELINE"); fi
+        if [ -n "$HTML_REPORT" ]; then CMD+=(--html-report "$HTML_REPORT"); fi
+
+        echo "::group::pywrkr"
+        set +e
+        "${CMD[@]}"
+        RC=$?
+        set -e
+        echo "::endgroup::"
+
+        echo "results-file=$RESULTS_FILE" >> "$GITHUB_OUTPUT"
+        if [ ! -s "$RESULTS_FILE" ]; then
+          echo "::error::pywrkr exited $RC without writing results to $RESULTS_FILE"
+          exit 1
+        fi
+        echo "run-exit-code=$RC" >> "$GITHUB_OUTPUT"
+
+    - name: Render summary
+      id: summary
+      shell: bash
+      env:
+        RESULTS_FILE: ${{ steps.run.outputs.results-file }}
+        SUMMARY_FILE: ${{ inputs.summary-file }}
+        THRESHOLDS: ${{ inputs.thresholds }}
+        BASELINE: ${{ inputs.baseline }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        set -euo pipefail
+        CMD=("$PYWRKR_BIN" summary "$RESULTS_FILE" --marker --title "$TITLE"
+             --output "$SUMMARY_FILE" --github-output "$GITHUB_OUTPUT")
+        while IFS= read -r line; do
+          if [ -n "${line//[[:space:]]/}" ]; then CMD+=(--threshold "$line"); fi
+        done <<< "$THRESHOLDS"
+        if [ -n "$BASELINE" ]; then
+          CMD+=(--baseline "$BASELINE")
+          while IFS= read -r line; do
+            if [ -n "${line//[[:space:]]/}" ]; then CMD+=(--fail-on "$line"); fi
+          done <<< "$FAIL_ON"
+        fi
+
+        set +e
+        "${CMD[@]}"
+        RC=$?
+        set -e
+
+        echo "summary-file=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+        echo "summary-exit-code=$RC" >> "$GITHUB_OUTPUT"
+        case "$RC" in
+          0) VERDICT=pass ;;
+          2) VERDICT=threshold ;;
+          3) VERDICT=regression ;;
+          *) VERDICT=error ;;
+        esac
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+    - name: Job summary
+      if: ${{ inputs.job-summary == 'true' }}
+      shell: bash
+      env:
+        SUMMARY_FILE: ${{ steps.summary.outputs.summary-file }}
+      run: cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on the pull request
+      if: ${{ inputs.comment-pr == 'true' && github.event.pull_request.number }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        SUMMARY_FILE: ${{ steps.summary.outputs.summary-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        "$PYWRKR_PY" "$ACTION_PATH/action/pr_comment.py"
+
+    - name: Verdict
+      shell: bash
+      env:
+        SOFT_FAIL: ${{ inputs.soft-fail }}
+        VERDICT: ${{ steps.summary.outputs.verdict }}
+        RUN_RC: ${{ steps.run.outputs.run-exit-code }}
+        SUMMARY_RC: ${{ steps.summary.outputs.summary-exit-code }}
+      run: |
+        set -euo pipefail
+        case "$VERDICT" in
+          pass)       echo "All checks passed." ;;
+          threshold)  echo "::error::A pywrkr threshold was breached." ;;
+          regression) echo "::error::Performance regressed against the baseline." ;;
+          *)          echo "::error::pywrkr summary failed (exit $SUMMARY_RC)." ;;
+        esac
+        if [ "$RUN_RC" != "0" ] && [ "$VERDICT" = "pass" ]; then
+          # The benchmark itself failed for a reason the summary cannot see --
+          # a connection refused, a config error. Never report that as green.
+          echo "::error::pywrkr exited $RUN_RC."
+          [ "$SOFT_FAIL" = "true" ] || exit "$RUN_RC"
+        fi
+        if [ "$VERDICT" != "pass" ]; then
+          [ "$SOFT_FAIL" = "true" ] || exit 1
+          echo "soft-fail is on: reporting the failure without failing the step."
+        fi

@@ -309,7 +309,7 @@ def evaluate_thresholds(
     results: list[tuple[Threshold, float, bool]] = []
     for th in thresholds:
         actual = _get_metric_value(th.metric, stats, duration, pct_map)
-        passed = _compare(actual, th.operator, th.value)
+        passed = compare_threshold(actual, th.operator, th.value)
         results.append((th, actual, passed))
     return results
 
@@ -339,7 +339,7 @@ def _get_metric_value(
     return 0.0
 
 
-def _compare(actual: float, operator: str, threshold: float) -> bool:
+def compare_threshold(actual: float, operator: str, threshold: float) -> bool:
     """Compare actual value against threshold using the given operator."""
     if operator == "<":
         return actual < threshold
