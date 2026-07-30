@@ -123,10 +123,8 @@ class TestFinalizeRunSurfacesCrashes(unittest.IsolatedAsyncioTestCase):
 
         progress_task = asyncio.create_task(_progress(stop_event))
 
-        import aiohttp
-
-        connector = aiohttp.TCPConnector()
         config = pywrkr.BenchmarkConfig(url="http://localhost/", duration=1.0)
+        backend = pywrkr.AiohttpBackend(config, 1)
         tasks = [
             asyncio.create_task(_good_worker()),
             asyncio.create_task(_crashing_worker()),
@@ -138,7 +136,7 @@ class TestFinalizeRunSurfacesCrashes(unittest.IsolatedAsyncioTestCase):
                     tasks,
                     stop_event,
                     progress_task,
-                    connector,
+                    backend,
                     [pywrkr.WorkerStats(), pywrkr.WorkerStats()],
                     start_time=0.0,
                     config=config,
@@ -444,30 +442,22 @@ class TestWorkersAuditIntegration(AioHTTPTestCase):
 
 class TestMalformedContentLength(unittest.IsolatedAsyncioTestCase):
     async def test_non_numeric_content_length_records_error_no_raise(self):
-        import aiohttp
-
-        class _FakeResp:
-            status = 200
-
-            def __init__(self):
-                self.headers = {"Content-Length": "abc"}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-            async def read(self):
-                return b"hello"
+        from pywrkr.backends import BackendResponse
 
         class _FakeSession:
-            def request(self, *a, **k):
-                return _FakeResp()
+            async def send(self, *a, **k):
+                return BackendResponse(
+                    status=200,
+                    body=b"hello",
+                    headers={"Content-Length": "abc"},
+                    http_version="1.1",
+                )
+
+            def clear_cookies(self):
+                pass
 
         stats = pywrkr.WorkerStats()
         config = pywrkr.BenchmarkConfig(url="http://localhost/", verify_content_length=True)
-        timeout = aiohttp.ClientTimeout(total=5)
         # Must not raise; must record a content_length_error.
         result = await workers._execute_request(
             _FakeSession(),
@@ -476,7 +466,7 @@ class TestMalformedContentLength(unittest.IsolatedAsyncioTestCase):
             {},
             None,
             False,
-            timeout,
+            5.0,
             stats,
             config,
             None,

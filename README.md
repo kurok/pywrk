@@ -38,6 +38,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 
 - **HAR import** (`har-import`): convert browser-recorded HAR files into pywrkr scenarios or URL lists — dramatically cuts test authoring time
 - **Scripted scenarios** (`--scenario`): multi-step flows with variable extraction and `${var}` correlation — log in, capture the token, and hit authenticated endpoints with it
+- **HTTP/2** (`--http2`): protocol-representative load against modern edges, via a pluggable client backend — the negotiated protocol is reported, never assumed
 - **Per-user sessions:** each virtual user keeps its own cookie jar, so cookie-session logins work and N users look like N real clients rather than one anonymous loop
 - **Data-driven testing** (`--data`): CSV/JSON feeders with `loop`/`sequential`/`random`/`unique` strategies plus built-in generators (`${uuid()}`, `${randint()}`, `${counter()}`, …) — 1000 users with 1000 distinct payloads, not 1000 copies of one request
 - **Five benchmarking modes:**
@@ -228,6 +229,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | `-A` | `--basic-auth` | Basic HTTP auth as `user:pass` |
 | `-C` | `--cookie` | Cookie as `name=value` (repeatable) — always sent, in every mode |
 | | `--no-session-cookies` | Ignore `Set-Cookie`. By default each virtual user keeps its own cookie jar |
+| | `--http2` | Use the HTTP/2 backend (needs `pywrkr[http2]`). `-c` then bounds concurrent streams, not connections |
 | | `--data` | Attach a CSV/JSON data set as `NAME=FILE` (repeatable), referenced as `${NAME.column}`. Requires `--scenario` |
 | | `--data-strategy` | Row hand-out strategy as `NAME=STRATEGY` (repeatable): `loop`, `sequential`, `random`, `unique` |
 | | `--baseline` | Compare against previous `--json` results (file or glob to average) and apply `--fail-on` |
@@ -456,6 +458,46 @@ Those dedicated counters record every occurrence, but the headline `Total Errors
 its body, and the `${var}` that could not resolve as a result are one broken flow, not three.
 
 Working example: [`examples/scenario-correlation.json`](examples/scenario-correlation.json).
+
+### HTTP/2
+
+Most production edges (CDNs, ALBs, nginx, Envoy) serve HTTP/2, and their behaviour under load is
+qualitatively different: h2 multiplexes streams over one connection instead of holding a
+connection per in-flight request. `--http2` generates protocol-representative load against them.
+
+```bash
+pip install 'pywrkr[http2]'
+pywrkr --http2 -c 100 -d 30 https://edge.example.com/
+```
+
+**`-c` means concurrent streams, not connections.** Under HTTP/1.1, `-c 100` opens 100 sockets.
+Under HTTP/2 the client multiplexes, so `-c 100` bounds in-flight streams and the socket count is
+far lower — worth remembering when comparing an h1 baseline against an h2 run.
+
+**Protocol negotiation is reported, never assumed.** Over `https://`, ALPN decides; a server that
+only offers HTTP/1.1 is used as such, counted separately, and warned about, so a run can't quietly
+claim to be an HTTP/2 test:
+
+```
+  NEGOTIATED PROTOCOL
+    HTTP/2:        9,321 (100.0%)
+```
+
+JSON output carries the same counts in `http_versions`. Over `http://` there is no ALPN handshake,
+so HTTP/2 is used with prior knowledge (h2c) — the only way `--http2` can mean anything against a
+cleartext target. A cleartext server that does not speak h2c will fail the requests rather than
+silently downgrade.
+
+**`--latency-breakdown` reports less on this backend.** The HTTP/2 client has no hooks for the DNS,
+TCP and TLS phases, so those are **omitted** rather than reported as zero — a zero would read as an
+impossibly fast connection phase. TTFB, transfer and total are still measured. Connection-reuse
+counts are omitted for the same reason: under h2, "200 new connections" would be one connection
+carrying 200 streams.
+
+Everything else — virtual users, rate limiting, traffic profiles, scenarios with correlation and
+feeders, thresholds, and baseline comparison — works identically on both backends. Distributed
+workers must each have the extra installed; a worker without it refuses the run and says so rather
+than contributing HTTP/1.1 load to an HTTP/2 result.
 
 ### Regression Testing in CI
 

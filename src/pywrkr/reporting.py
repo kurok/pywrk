@@ -79,8 +79,12 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
     if not breakdowns:
         return {}
 
-    new_conns = sum(1 for b in breakdowns if not b.is_reused)
-    reused_conns = sum(1 for b in breakdowns if b.is_reused)
+    # Only report phases every sample actually measured. The httpx backend has
+    # no hooks for DNS/TCP/TLS, and averaging in zeros for those would invent a
+    # suspiciously fast connection phase rather than admitting it is unknown.
+    measurable = set(getattr(breakdowns[0], "available", None) or ())
+    for b in breakdowns[1:]:
+        measurable &= set(getattr(b, "available", None) or ())
 
     phases = {
         "dns": [b.dns for b in breakdowns],
@@ -90,11 +94,15 @@ def aggregate_breakdowns(breakdowns: list[LatencyBreakdown]) -> dict:
         "transfer": [b.transfer for b in breakdowns],
         "total": [b.dns + b.connect + b.tls + b.ttfb + b.transfer for b in breakdowns],
     }
+    phases = {name: values for name, values in phases.items() if name in measurable}
 
-    result = {
-        "new_connections": new_conns,
-        "reused_connections": reused_conns,
-    }
+    result: dict = {}
+    # Connection reuse is only knowable from the connection-level hooks. Under
+    # HTTP/2 in particular, "200 new connections" would be flatly wrong: that is
+    # one connection carrying 200 streams.
+    if "connect" in measurable:
+        result["new_connections"] = sum(1 for b in breakdowns if not b.is_reused)
+        result["reused_connections"] = sum(1 for b in breakdowns if b.is_reused)
 
     for name, values in phases.items():
         if not values:
@@ -488,6 +496,10 @@ def build_results_dict(
         "extract_failures": stats.extract_failures,
         "template_errors": stats.template_errors,
         "status_codes": dict(stats.status_codes),
+        # Negotiated protocol per response. With --http2 this is what shows a
+        # server that only offered HTTP/1.1, rather than the run silently
+        # claiming to be an HTTP/2 test.
+        "http_versions": dict(stats.http_versions),
         "error_types": dict(stats.error_types),
         # Throughput timeline as [seconds_from_start, requests_in_interval] pairs.
         # Always present (empty list when not collected) so JSON/CI consumers can
@@ -545,10 +557,12 @@ def build_results_dict(
     # Latency breakdown
     if stats.breakdowns:
         agg = aggregate_breakdowns(stats.breakdowns)
-        bd_json: dict = {
-            "new_connections": agg.get("new_connections", 0),
-            "reused_connections": agg.get("reused_connections", 0),
-        }
+        bd_json: dict = {}
+        # Omitted entirely when the backend cannot observe connection reuse,
+        # rather than reported as zero.
+        for key in ("new_connections", "reused_connections"):
+            if key in agg:
+                bd_json[key] = agg[key]
         for phase in ("dns", "connect", "tls", "ttfb", "transfer", "total"):
             if phase in agg:
                 bd_json[phase] = {k: round(v, 6) for k, v in agg[phase].items()}
@@ -1234,10 +1248,32 @@ def _print_console_results(
                     f" p95={format_duration(d['p95'])})",
                     file=out,
                 )
-        new_c = agg.get("new_connections", 0)
-        reused_c = agg.get("reused_connections", 0)
-        print(f"\n    New Connections:    {new_c:,}", file=out)
-        print(f"    Reused Connections: {reused_c:,}", file=out)
+        if "new_connections" in agg:
+            print(f"\n    New Connections:    {agg['new_connections']:,}", file=out)
+            print(f"    Reused Connections: {agg['reused_connections']:,}", file=out)
+        else:
+            print(
+                "\n    Connection reuse:   not observable on this backend",
+                file=out,
+            )
+
+    # Negotiated protocol. Only interesting when HTTP/2 was asked for, or when
+    # a run somehow saw more than one protocol.
+    if stats.http_versions and (config.http2 or len(stats.http_versions) > 1):
+        print(f"\n{'=' * 70}", file=out)
+        print("  NEGOTIATED PROTOCOL", file=out)
+        print(f"{'=' * 70}", file=out)
+        total_versioned = sum(stats.http_versions.values()) or 1
+        for version, count in sorted(stats.http_versions.items()):
+            pct = count / total_versioned * 100
+            print(f"    HTTP/{version}: {count:>10,} ({pct:5.1f}%)", file=out)
+        fallback = sum(c for v, c in stats.http_versions.items() if v != "2")
+        if config.http2 and fallback:
+            print(
+                f"\n    WARNING: {fallback:,} request(s) did not use HTTP/2. The server "
+                f"offered HTTP/1.1;\n             these numbers are not HTTP/2 numbers.",
+                file=out,
+            )
 
     # Status codes
     if stats.status_codes:

@@ -17,6 +17,7 @@ import os
 import sys
 from urllib.parse import urlparse
 
+from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import (
     COMPARE_FORMATS,
     EXIT_USAGE,
@@ -133,6 +134,16 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         help="Do not honor Set-Cookie. By default each virtual user keeps its own "
         "cookie jar, so N users look like N sessions; use this to send only the "
         "static -C cookies (e.g. when benchmarking a cache or CDN layer).",
+    )
+    parser.add_argument(
+        "--http2",
+        action="store_true",
+        default=False,
+        help="Use the HTTP/2-capable backend (requires the extra: "
+        f"{HTTP2_INSTALL_HINT}). Over https:// the protocol is negotiated by ALPN "
+        "and an HTTP/1.1-only server is reported, not silently accepted; over "
+        "http:// HTTP/2 is used with prior knowledge (h2c). Note that -c then "
+        "bounds concurrent streams rather than connections",
     )
     parser.add_argument(
         "-k",
@@ -801,6 +812,27 @@ def _validate_url_and_mode(
         _require_http_scheme(parser, args.url, "")
 
 
+def _validate_http2(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject --http2 when the optional backend is not installed.
+
+    Failing here, by name, beats an ImportError surfacing from inside a worker
+    once the run is already under way.
+    """
+    if not getattr(args, "http2", False):
+        return
+    if not http2_available():
+        parser.error(
+            f"--http2 requires the HTTP/2 backend, which is not installed. "
+            f"Install it with: {HTTP2_INSTALL_HINT}"
+        )
+    if args.latency_breakdown:
+        logger.warning(
+            "--latency-breakdown with --http2 reports only TTFB and transfer: the "
+            "HTTP/2 backend has no hooks for the DNS, TCP and TLS phases, so those "
+            "are omitted rather than reported as zero."
+        )
+
+
 def _validate_load_params(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1043,6 +1075,7 @@ def _parse_and_validate_args(
     _determine_and_run_mode for mode-specific fields).
     """
     _validate_url_and_mode(parser, args)
+    _validate_http2(parser, args)
 
     duration = _validate_load_params(parser, args)
     body = _resolve_body(parser, args)
@@ -1105,6 +1138,7 @@ def _parse_and_validate_args(
         basic_auth=args.basic_auth,
         cookies=args.cookies,
         session_cookies=args.session_cookies,
+        http2=args.http2,
         verify_content_length=args.verify_length,
         verbosity=args.verbosity,
         csv_output=args.csv,

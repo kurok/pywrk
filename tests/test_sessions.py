@@ -335,15 +335,16 @@ class TestCookieSessionIntegration(_SessionServerMixin, AioHTTPTestCase):
         # depend on request interleaving, this one does not.
         jars: list[object] = []
         # Bound at import time, so it still refers to the real factory once the
-        # module attribute below is patched.
+        # module attribute below is patched. The jar is built by the aiohttp
+        # backend, so that is where the patch has to land.
         real_create = _create_cookie_jar
 
-        def spy(config):
-            jar = real_create(config)
+        def spy(config, isolate_cookies=True):
+            jar = real_create(config, isolate_cookies)
             jars.append(jar)
             return jar
 
-        with patch("pywrkr.workers._create_cookie_jar", spy):
+        with patch("pywrkr.backends.create_cookie_jar", spy):
             await self._run_scenario(_LOGIN_THEN_ME, users=5, duration=0.5)
 
         self.assertEqual(len(jars), 5)

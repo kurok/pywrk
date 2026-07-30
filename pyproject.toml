@@ -29,8 +29,9 @@ dependencies = [
 [project.optional-dependencies]
 tui = ["rich>=13.0"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
-all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
-dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.14.0"]
+http2 = ["httpx[http2]>=0.27"]
+all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "httpx[http2]>=0.27"]
+dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.14.0", "httpx[http2]>=0.27", "hypercorn>=0.17"]
 lint = ["mypy>=1.0", "ruff>=0.1.0"]
 security = ["bandit>=1.7", "pip-audit>=2.6"]
 
