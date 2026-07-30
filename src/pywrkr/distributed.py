@@ -230,6 +230,7 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "tags": dict(config.tags),
         "otel_endpoint": config.otel_endpoint,
         "prom_remote_write": config.prom_remote_write,
+        "export_interval": config.export_interval,
         "thresholds": [_serialize_threshold(t) for t in config.thresholds],
         # Carried for a faithful round-trip; a worker never acts on them, because
         # _finalize_run skips the gate for a sub-run (see run_baseline_gate).
@@ -280,6 +281,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         tags=data.get("tags", {}),
         otel_endpoint=data.get("otel_endpoint"),
         prom_remote_write=data.get("prom_remote_write"),
+        export_interval=data.get("export_interval"),
         thresholds=[_deserialize_threshold(t) for t in data.get("thresholds", [])],
         baseline=data.get("baseline"),
         save_baseline=data.get("save_baseline"),

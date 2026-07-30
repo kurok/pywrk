@@ -54,6 +54,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
     run_observability_exports,
 )
+from pywrkr.streaming import StreamingExporter
 from pywrkr.templating import (
     TemplateError,
     TemplateFunctions,
@@ -567,6 +568,8 @@ async def _execute_request(
         stats.total_requests += 1
         stats.total_bytes += len(data)
         stats.latencies.append(latency)
+        if stats.window_latencies is not None:
+            stats.window_latencies.append(latency)
         stats.status_codes[resp.status] += 1
         stats.http_versions[resp.http_version] += 1
         if step_name:
@@ -1223,6 +1226,29 @@ def _setup_signal_handlers(stop_event: asyncio.Event) -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
 
+def _create_streaming_exporter(
+    config: BenchmarkConfig,
+    all_stats: list[WorkerStats],
+    start_time: float,
+    *,
+    active_users: "ActiveUsers | None" = None,
+    rate_limiter: "RateLimiter | None" = None,
+) -> "StreamingExporter | None":
+    """Build the streaming exporter, or None when nothing asked for one."""
+    if not config.export_interval:
+        return None
+    if not (config.otel_endpoint or config.prom_remote_write):
+        return None
+    return StreamingExporter(
+        config,
+        all_stats,
+        config.export_interval,
+        active_users=active_users,
+        rate_limiter=rate_limiter,
+        start_time=start_time,
+    )
+
+
 def _create_rate_limiter(config: BenchmarkConfig, duration: float | None) -> RateLimiter | None:
     """Create a rate limiter from config, or None if rate limiting is disabled."""
     if config.rate is None:
@@ -1306,6 +1332,7 @@ async def _finalize_run(
     *,
     quiet: bool = False,
     on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
+    streaming: "StreamingExporter | None" = None,
 ) -> tuple[WorkerStats, int]:
     """Await workers, merge stats, print results, and evaluate thresholds.
 
@@ -1346,6 +1373,11 @@ async def _finalize_run(
                 _ = await progress_task
         await backend.aclose()
 
+    if streaming is not None:
+        # Emits a final snapshot, so a run cut short by SIGINT still leaves its
+        # last state in the TSDB.
+        await streaming.aclose()
+
     actual_duration = end_time - start_time
     merged = merge_stats(all_stats)
     logger.debug(
@@ -1358,6 +1390,17 @@ async def _finalize_run(
 
     if not quiet:
         print_results(merged, actual_duration, concurrency, start_time, config, rate_limiter)
+        summary = streaming.summary() if streaming is not None else None
+        if summary:
+            print(f"\n  {summary}", file=sys.stdout)
+    if streaming is not None and not streaming.all_delivered:
+        logger.warning(
+            "Streaming export incomplete: %d failed, %d never delivered, %d dropped. "
+            "The collector was unreachable or could not keep up.",
+            streaming.failed,
+            streaming.undelivered,
+            streaming.dropped,
+        )
 
     exit_code = 0
     if config.thresholds:
@@ -1539,6 +1582,10 @@ async def run_benchmark(
         on_tick=on_tick,
     )
 
+    streaming = _create_streaming_exporter(config, all_stats, start_time, rate_limiter=rate_limiter)
+    if streaming is not None:
+        await streaming.start()
+
     return await _finalize_run(
         tasks,
         stop_event,
@@ -1551,6 +1598,7 @@ async def run_benchmark(
         config.connections,
         quiet=quiet,
         on_complete=on_complete,
+        streaming=streaming,
     )
 
 
@@ -1661,6 +1709,12 @@ async def run_user_simulation(
         on_tick=on_tick,
     )
 
+    streaming = _create_streaming_exporter(
+        config, all_stats, start_time, active_users=active_users, rate_limiter=rate_limiter
+    )
+    if streaming is not None:
+        await streaming.start()
+
     # Guard the window between backend creation and _finalize_run (which owns
     # backend close + task teardown on normal completion). If this coroutine is
     # cancelled during ramp-up -- a window that can span seconds to minutes --
@@ -1671,6 +1725,8 @@ async def run_user_simulation(
             if stop_event.is_set():
                 break
             ws = WorkerStats()
+            if streaming is not None:
+                streaming.enable_window_capture(ws)
             all_stats.append(ws)
             if config.scenario:
                 tasks.append(
@@ -1719,6 +1775,7 @@ async def run_user_simulation(
             num_users,
             quiet=quiet,
             on_complete=on_complete,
+            streaming=streaming,
         )
     except BaseException:
         # Cancellation (or any other failure) before/within _finalize_run:
@@ -1829,6 +1886,13 @@ async def run_autofind(config: AutofindConfig) -> list[StepResult]:
             keepalive=config.keepalive,
             random_param=config.random_param,
             ramp_up=0.0,
+            ssl_config=config.ssl_config,
+            otel_endpoint=config.otel_endpoint,
+            prom_remote_write=config.prom_remote_write,
+            export_interval=config.export_interval,
+            # step_users makes the ramp legible in a live dashboard: each step's
+            # series is separable instead of one smeared line.
+            tags={**config.tags, "step_users": str(num_users)},
             _quiet=True,
         )
         stats, _ = await run_user_simulation(bench_config)

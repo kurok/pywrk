@@ -58,7 +58,7 @@ That's it. Add `--json results.json`, `-w report.html`, `--threshold "p95<300ms"
 - **Live progress display** with requests/sec, error count, and active user count
 - **SLO-aware thresholds** (`--threshold`): pass/fail criteria like `p95 < 300ms`, `error_rate < 1%` with non-zero exit code on breach — CI-ready
 - **Regression detection** (`pywrkr compare`, `--baseline`): gate a PR on *relative* change — "fail if p95 got 10% worse than main" — with a markdown delta table for the PR comment
-- **Native observability export:** OpenTelemetry (`--otel-endpoint`) and Prometheus remote write (`--prom-remote-write`)
+- **Native observability export:** OpenTelemetry (`--otel-endpoint`) and Prometheus remote write (`--prom-remote-write`), streamed live during the run with `--export-interval` — windowed percentiles, cumulative counters
 - **Test metadata tags** (`--tag`): attach environment, build, region labels to metrics and JSON output
 
 ### HAR / Browser-Recording Import
@@ -353,6 +353,7 @@ usage: pywrkr [-h] [-c CONNECTIONS] [-d DURATION] [-n NUM_REQUESTS]
 | | `--tag` | Metadata tag as `key=value` (repeatable), e.g. `--tag environment=staging` |
 | | `--otel-endpoint` | Export metrics to OpenTelemetry collector (OTLP/HTTP) |
 | | `--prom-remote-write` | Push metrics to Prometheus Pushgateway endpoint |
+| | `--export-interval` | Stream metric snapshots every N seconds instead of only at the end (needs an export endpoint) |
 | | `--ssl-verify` / `PYWRKR_SSL_VERIFY` | Enable TLS certificate verification (default: disabled). Recommended when using `--basic-auth` or `--cookie` against `https://` targets |
 | | `--ca-bundle PATH` / `PYWRKR_CA_BUNDLE` | Path to a custom CA certificate bundle (PEM format). Used when `--ssl-verify` is enabled and the target uses a private or corporate CA |
 
@@ -1112,6 +1113,53 @@ pywrkr --prom-remote-write http://pushgateway:9091 \
 ```
 
 Uses stdlib `urllib` — no extra dependencies. Pushes metrics in Prometheus text format to `{endpoint}/metrics/job/pywrkr`.
+
+#### Live streaming during the run (`--export-interval`)
+
+By default metrics are pushed **once, at the end**. For the runs where observability matters most
+— a 30-minute soak, an autofind ramp, a traffic profile — that leaves you blind until it's over,
+and a killed run exports nothing at all. `--export-interval` streams snapshots as the run happens:
+
+```bash
+pywrkr --otel-endpoint http://collector:4318 --export-interval 10 \
+    --tag test=soak-v2 --rate 500 -d 1800 https://api.example.com/
+```
+
+**Counters stay cumulative** (`pywrkr_requests_total`, `pywrkr_errors_total`), so Prometheus
+`rate()` and OTel deltas work normally. **Percentiles are windowed** — computed over the last
+interval only, so a spike 25 minutes ago is not still dragging your current p95 around. The
+run-cumulative percentiles are still what the end-of-run export carries.
+
+Each streamed snapshot is labelled `export="interval"`, and the one emitted at shutdown
+`export="final"`, so a dashboard can separate live points from the closing state. **A run
+interrupted with Ctrl-C still emits that final snapshot**, so an aborted soak leaves its last
+state in the TSDB rather than a cliff.
+
+**A slow collector never slows the run.** Sampling and sending are separate tasks joined by a
+bounded queue: if the endpoint is unreachable, snapshots are dropped rather than backing up into
+the request path, and the count is reported at the end —
+
+```
+  Streaming export: 0 snapshot(s) exported, 3 never delivered (collector unresponsive)
+```
+
+— never a silent success. Measured cost against an unreachable collector: ~1% of throughput.
+
+Without `--export-interval` nothing changes: one export at the end, exactly as before.
+
+**Grafana walkthrough.** Point pywrkr at a collector that writes to your Prometheus, then graph:
+
+| Panel | Query |
+|-------|-------|
+| Achieved throughput | `rate(pywrkr_requests_total[1m])` |
+| Error rate | `rate(pywrkr_errors_total[1m]) / rate(pywrkr_requests_total[1m])` |
+| Windowed p95 | `pywrkr_latency_p95_ms{export="interval"}` |
+| Target vs achieved | `pywrkr_requests_per_sec` against your `--rate` |
+
+Put those beside your service's own dashboards and a latency spike lines up with the deploy, GC
+pause, or scaling event that caused it — while the test is still running. With `--autofind`, every
+snapshot carries a `step_users` label, so each step of the ramp is a separable series instead of
+one smeared line.
 
 #### Test Metadata Tags
 

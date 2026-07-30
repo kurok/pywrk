@@ -398,6 +398,9 @@ class WorkerStats:
     breakdowns: ReservoirSampler = field(
         default_factory=lambda: ReservoirSampler(DEFAULT_RESERVOIR_SIZE)
     )
+    # Latencies since the last streaming-export tick. None (the default) means
+    # nobody is streaming, and the hot path skips the append entirely.
+    window_latencies: "list[float] | None" = None
 
 
 @dataclass
@@ -454,6 +457,8 @@ class BenchmarkConfig:
     tags: dict[str, str] = field(default_factory=dict)
     otel_endpoint: str | None = None
     prom_remote_write: str | None = None
+    # Seconds between streaming metric exports; None exports only at the end.
+    export_interval: float | None = None
     # SLO thresholds
     thresholds: "list[Threshold]" = field(default_factory=list)
     # Baseline regression gate: compare this run against previous results and
@@ -493,6 +498,13 @@ class AutofindConfig:
     keepalive: bool = True
     ssl_config: SSLConfig = field(default_factory=SSLConfig)
     json_output: str | None = None
+    # Observability settings, carried through to each step's benchmark config.
+    # Without these an autofind session exported nothing at all, which is the
+    # run you most want to watch live.
+    tags: dict[str, str] = field(default_factory=dict)
+    otel_endpoint: str | None = None
+    prom_remote_write: str | None = None
+    export_interval: float | None = None
 
 
 @dataclass
