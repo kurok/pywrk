@@ -399,7 +399,19 @@ def average_results(runs: Sequence[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 #: Config-snapshot fields that must match for a comparison to mean anything.
-_CONFIG_FIELDS = ("mode", "connections", "users", "duration", "num_requests", "rate", "url_host")
+_CONFIG_FIELDS = (
+    "mode",
+    "connections",
+    "users",
+    "duration",
+    "num_requests",
+    "rate",
+    "url_host",
+    # A run that read bodies and one that did not are not measuring the same
+    # thing: total_bytes counts only what was read, and a released response's
+    # latency excludes receiving it.
+    "read_body",
+)
 
 
 def config_differences(baseline: dict, current: dict) -> list[str]:
@@ -416,6 +428,11 @@ def config_differences(baseline: dict, current: dict) -> list[str]:
 
     differences = []
     for name in _CONFIG_FIELDS:
+        # A field absent from either side was not recorded, and an unrecorded
+        # value cannot differ from anything. Without this, every field added to
+        # the snapshot would make older baselines warn about themselves.
+        if name not in base_cfg or name not in cur_cfg:
+            continue
         before, after = base_cfg.get(name), cur_cfg.get(name)
         if before != after:
             differences.append(f"{name}: baseline {before!r} vs current {after!r}")

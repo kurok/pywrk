@@ -258,6 +258,9 @@ def _serialize_config(config: BenchmarkConfig) -> dict:
         "fail_on": [rule.raw for rule in config.fail_on],
         "strict_config": config.strict_config,
         "compare_format": config.compare_format,
+        # Without this a worker would read bodies while the master reported a
+        # run that did not, or the reverse.
+        "read_body": config.read_body,
         "scenario": _serialize_scenario(config.scenario),
         "html_report": config.html_report,
         "csv_output": config.csv_output,
@@ -307,6 +310,7 @@ def _deserialize_config(data: dict) -> BenchmarkConfig:
         fail_on=[parse_fail_on(expr) for expr in data.get("fail_on", [])],
         strict_config=data.get("strict_config", False),
         compare_format=data.get("compare_format", "table"),
+        read_body=data.get("read_body", True),
         scenario=_deserialize_scenario(data.get("scenario")),
         html_report=data.get("html_report"),
         csv_output=data.get("csv_output"),

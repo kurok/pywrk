@@ -1245,6 +1245,54 @@ isolate, so it keeps the client library's default jar. `--no-session-cookies` st
 **Distributed mode:** jars live per virtual user inside each worker process. There is no shared
 session state between worker nodes, so a session started on one node is never continued on another.
 
+### Skipping the Response Body
+
+`--no-read-body` releases the connection instead of reading the response body, for runs where
+nothing looks at it.
+
+```bash
+pywrkr --no-read-body -c 100 -d 30 http://localhost:8080/large.json
+```
+
+**Read this before using it.** The flag is opt-in because it is not the straightforward win it
+sounds like. Measured against a local server, three variants of the send path differing only in body
+handling — `read` (the default), `release` (this flag), and a control that waits for the body without
+building an object:
+
+| payload | `--no-read-body` vs default | control: wait, but don't build the object |
+|---------|-----------------------------|--------------------------------------------|
+| 0.1 KiB | rps **+4.6%**, p95 −4.2% | rps **−0.9%** |
+| 123 KiB | rps **+5.3%**, p95 −5.2% | rps **−5.0%** |
+| 1.2 MiB | rps **−15.5%**, p95 +18.5% | — |
+
+Three things follow, and they are the whole story:
+
+1. **Avoiding the allocation saves nothing.** That is what the control isolates: skip building the
+   bytes object but still wait for the body, and it is *slower* at every size. `await resp.read()` is
+   already an efficient bulk read.
+2. **The gain is the run no longer timing the response.** `release()` returns before the body has
+   arrived, so the measured latency stops including receipt. That is why p95 "improves" on a 0.1 KiB
+   body, where there is nothing to copy — a gain that does not scale with payload size is not a
+   saving on payload handling.
+3. **On large payloads it loses outright** — 15% slower at 1.2 MiB, because the un-awaited drain
+   contends with the next request.
+
+The bytes cross the wire either way: an HTTP/1.1 keep-alive connection has to be drained before it
+can carry the next response, so there was never bandwidth to save.
+
+If you want it anyway, what it does is honest about itself:
+
+- `total_bytes` and `transfer_per_sec_bytes` count only what was read, and `--json` records
+  `config.read_body: false` so a zero is never ambiguous.
+- `pywrkr compare` warns when one run read bodies and the other did not, instead of reporting the
+  transfer-rate collapse as a regression.
+- **Anything that inspects the body reads it regardless**: a step with an `extract` rule or a body
+  assertion (`assert_body_contains`, `assert_body_regex`, `assert_json`), plus `--verify-length` and
+  `-v 3`. The decision is per step, so a scenario can mix both kinds. The flag cannot silently break
+  a flow that depends on response content.
+- `--http2` (the httpx backend) is unaffected: its non-streaming send has already read the body by
+  the time it returns, so there is nothing to skip.
+
 ### Cache-Busting Mode
 
 Append `-R` to any mode to bypass HTTP caches by adding a unique query parameter to each request:

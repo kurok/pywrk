@@ -642,6 +642,11 @@ def _config_snapshot(config: BenchmarkConfig, connections: int) -> dict:
         "num_requests": config.num_requests,
         "rate": config.rate,
         "url_host": urlparse(config.url).netloc or None,
+        # Whether bodies were read. Two runs that differ here are not measuring
+        # the same thing -- total_bytes counts only what was read, and the
+        # latency of a released response excludes receiving it -- so `compare`
+        # warns rather than reporting a spectacular transfer-rate change.
+        "read_body": config.read_body,
     }
 
 
