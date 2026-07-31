@@ -376,7 +376,14 @@ class TestProgressReporter(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
 
         await loop.run_in_executor(None, reporter.submit, snapshot())
-        await asyncio.wait_for(reporter._queue.join(), timeout=3.0)
+        # Poll rather than await queue.join(): call_soon_threadsafe defers the
+        # enqueue, so join() can see an empty queue and return before the item
+        # has landed. That made this test pass on 3.10-3.12 and fail on 3.13
+        # purely on scheduling order.
+        for _ in range(300):
+            if reporter.sent:
+                break
+            await asyncio.sleep(0.01)
         self.assertEqual(reporter.sent, 1)
         await reporter.aclose()
 
