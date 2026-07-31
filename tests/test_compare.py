@@ -166,8 +166,16 @@ class TestMetricValue(unittest.TestCase):
     def test_derived_error_rate(self):
         self.assertAlmostEqual(metric_value(BASE, "error_rate"), 0.1)
 
-    def test_error_rate_with_no_requests(self):
-        self.assertEqual(metric_value(variant(total_requests=0), "error_rate"), 0.0)
+    def test_error_rate_with_no_requests_is_undefined_not_zero(self):
+        """A rate over nothing has no value. Returning 0.0 made
+        `error_rate < 1%` pass on a run that never completed a request (#213).
+        """
+        self.assertIsNone(metric_value(variant(total_requests=0), "error_rate"))
+
+    def test_error_rate_with_requests_and_no_errors_is_a_real_zero(self):
+        self.assertEqual(
+            metric_value(variant(total_requests=100, total_errors=0), "error_rate"), 0.0
+        )
 
     def test_step_metric(self):
         self.assertEqual(metric_value(BASE, "step:checkout.mean"), 0.03)

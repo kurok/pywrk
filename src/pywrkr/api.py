@@ -112,8 +112,15 @@ class ThresholdVerdict:
 
     expression: str
     metric: str
-    actual: float
+    #: The measured value, or None when the run could not produce this metric.
+    #: A threshold on an unmeasurable metric fails; see
+    #: :func:`pywrkr.reporting.evaluate_thresholds`.
+    actual: "float | None"
     passed: bool
+
+    @property
+    def measured(self) -> bool:
+        return self.actual is not None
 
 
 @dataclass(frozen=True)
