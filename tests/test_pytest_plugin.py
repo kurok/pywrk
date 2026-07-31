@@ -582,24 +582,21 @@ class TestImportCost:
         offenders = [m for m in modules if m.startswith("pywrkr")]
         assert offenders == [], f"module-scope pywrkr imports: {offenders}"
 
-    def test_the_entry_point_is_declared(self):
-        import tomllib
+    def test_the_entry_point_is_registered(self):
+        """Read the installed metadata, not pyproject: this is what pytest sees."""
+        from importlib.metadata import entry_points
 
-        pyproject = tomllib.loads(
-            (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
-        )
-        entry_points = pyproject["project"]["entry-points"]["pytest11"]
-        assert entry_points["pywrkr"] == "pytest_pywrkr"
+        registered = {
+            ep.name: ep.value for ep in entry_points(group="pytest11") if ep.name == "pywrkr"
+        }
+        assert registered == {"pywrkr": "pytest_pywrkr"}, registered
 
-    def test_the_pytest_extra_exists_and_is_in_all(self):
-        import tomllib
+    def test_the_pytest_extra_is_declared(self):
+        from importlib.metadata import metadata
 
-        pyproject = tomllib.loads(
-            (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
-        )
-        extras = pyproject["project"]["optional-dependencies"]
-        assert any(dep.startswith("pytest") for dep in extras["pytest"])
-        assert any(dep.startswith("pytest") for dep in extras["all"])
+        extras = metadata("pywrkr").get_all("Provides-Extra") or []
+        assert "pytest" in extras, extras
+        assert "all" in extras, extras
 
 
 class TestPercentilesAccessor(unittest.TestCase):
