@@ -78,12 +78,17 @@ def _dig(results: dict, *path: str) -> "float | None":
 
 
 def _error_rate(results: dict) -> "float | None":
-    """Errors as a percentage of requests — derived, not stored in the JSON."""
+    """Errors as a percentage of requests — derived, not stored in the JSON.
+
+    None when no requests were made: a rate over nothing is undefined, not
+    zero. Returning 0.0 there let ``error_rate < 1%`` pass on a run that never
+    completed a request. See #213.
+    """
     total = _dig(results, "total_requests")
     errors = _dig(results, "total_errors")
-    if total is None or errors is None:
+    if total is None or errors is None or not total:
         return None
-    return (errors / total * 100) if total else 0.0
+    return errors / total * 100
 
 
 #: metric name -> (accessor, unit, higher_is_better)

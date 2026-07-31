@@ -77,8 +77,10 @@ class TestEvaluateFromResults(unittest.TestCase):
     def test_a_missing_metric_fails_rather_than_passing(self):
         """The whole point of the gate: no measurement is not a pass.
 
-        ``reporting.evaluate_thresholds`` substitutes 0.0 here, which would
-        make ``p95 < 500ms`` green on a run that never got a response.
+        ``reporting.evaluate_thresholds`` used to substitute 0.0 here, making
+        ``p95 < 500ms`` green on a run that never got a response. It was fixed
+        to match in #213; ``TestBothPathsAgree`` in
+        tests/test_thresholds_unmeasured.py holds the two together.
         """
         results = make_results(percentiles={})
         outcome = ci.evaluate_from_results(results, [parse_threshold("p95 < 500ms")])[0]

@@ -298,10 +298,22 @@ def evaluate_thresholds(
     thresholds: "list[Threshold]",
     stats: "WorkerStats",
     duration: float,
-) -> "list[tuple[Threshold, float, bool]]":
+) -> "list[tuple[Threshold, float | None, bool]]":
     """Evaluate thresholds against benchmark results.
 
-    Returns list of (threshold, actual_value, passed) tuples.
+    Returns a list of ``(threshold, actual_value, passed)`` tuples, where
+    *actual_value* is None for a metric this run could not produce.
+
+    A metric that could not be measured **fails** its threshold. It used to be
+    substituted with 0.0, which made ``p95 < 500ms`` pass on a run that never
+    recorded a latency -- a gate reporting success on a run where the service
+    was never exercised. A gate that is silent and a gate that is satisfied
+    must not look the same. This matches
+    :func:`pywrkr.ci.evaluate_from_results`, which reads the same metrics out
+    of a results file.
+
+    A genuine zero is still a zero: a run with requests and no failures really
+    does have ``error_rate == 0.0`` and keeps passing ``error_rate < 1%``.
     """
     # Pre-compute percentiles from latencies
     pct_map: dict[float, float] = {}
@@ -309,10 +321,10 @@ def evaluate_thresholds(
         for p, v in compute_percentiles(stats.latencies):
             pct_map[p] = v
 
-    results: list[tuple[Threshold, float, bool]] = []
+    results: list[tuple[Threshold, "float | None", bool]] = []
     for th in thresholds:
         actual = _get_metric_value(th.metric, stats, duration, pct_map)
-        passed = compare_threshold(actual, th.operator, th.value)
+        passed = actual is not None and compare_threshold(actual, th.operator, th.value)
         results.append((th, actual, passed))
     return results
 
@@ -322,24 +334,25 @@ def _get_metric_value(
     stats: "WorkerStats",
     duration: float,
     pct_map: dict[float, float],
-) -> float:
-    """Extract the actual metric value from stats."""
+) -> "float | None":
+    """Extract the actual metric value from stats, or None if unmeasurable."""
     if metric in _PERCENTILE_MAP:
-        pct_key = _PERCENTILE_MAP[metric]
-        return pct_map.get(pct_key, 0.0)
-    if metric == "avg_latency":
-        return (sum(stats.latencies) / len(stats.latencies)) if stats.latencies else 0.0
-    if metric == "max_latency":
-        return max(stats.latencies) if stats.latencies else 0.0
-    if metric == "min_latency":
-        return min(stats.latencies) if stats.latencies else 0.0
+        # Absent rather than zero: no samples means no percentile exists.
+        return pct_map.get(_PERCENTILE_MAP[metric])
+    if metric in ("avg_latency", "max_latency", "min_latency"):
+        if not stats.latencies:
+            return None
+        if metric == "avg_latency":
+            return sum(stats.latencies) / len(stats.latencies)
+        return max(stats.latencies) if metric == "max_latency" else min(stats.latencies)
     if metric == "error_rate":
+        # A rate over no requests is undefined, not zero.
         if stats.total_requests == 0:
-            return 0.0
+            return None
         return stats.errors / stats.total_requests * 100
     if metric == "rps":
-        return stats.total_requests / duration if duration > 0 else 0.0
-    return 0.0
+        return stats.total_requests / duration if duration > 0 else None
+    return None
 
 
 def compare_threshold(actual: float, operator: str, threshold: float) -> bool:
@@ -355,8 +368,25 @@ def compare_threshold(actual: float, operator: str, threshold: float) -> bool:
     return False
 
 
+def format_threshold_actual(metric: str, actual: "float | None") -> str:
+    """Render a measured threshold value in its metric's own unit.
+
+    None prints as ``not measured`` rather than as a zero: the number does not
+    exist, and printing one would be the same lie the gate used to tell.
+    """
+    if actual is None:
+        return "not measured"
+    if metric in _LATENCY_METRICS:
+        return format_duration(actual)
+    if metric == "error_rate":
+        return f"{actual:.2f}%"
+    if metric == "rps":
+        return f"{actual:.2f}"
+    return f"{actual:.4f}"
+
+
 def print_threshold_results(
-    results: "list[tuple[Threshold, float, bool]]",
+    results: "list[tuple[Threshold, float | None, bool]]",
     file: TextIO = sys.stdout,
 ) -> None:
     """Print a summary table of threshold evaluation results."""
@@ -368,15 +398,7 @@ def print_threshold_results(
     print(f"  {'-' * 30} {'-' * 12}   {'-' * 6}", file=file)
     for th, actual, passed in results:
         status = "PASS" if passed else "FAIL"
-        # Format actual value based on metric type
-        if th.metric in _LATENCY_METRICS:
-            actual_str = format_duration(actual)
-        elif th.metric == "error_rate":
-            actual_str = f"{actual:.2f}%"
-        elif th.metric == "rps":
-            actual_str = f"{actual:.2f}"
-        else:
-            actual_str = f"{actual:.4f}"
+        actual_str = format_threshold_actual(th.metric, actual)
         print(f"  {th.raw_expr:<30} {actual_str:>12}   {status:>6}", file=file)
 
     all_passed = all(passed for _, _, passed in results)

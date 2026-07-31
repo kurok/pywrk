@@ -649,6 +649,11 @@ class StepResult:
     total_requests: int
     total_errors: int
     passed: bool
+    #: Whether this step produced any latency samples. False means its p50/p95/
+    #: p99 are placeholders, not measurements, so the step cannot be judged
+    #: sustainable however small those numbers look.
+    measured: bool = True
+    latency_samples: int = 0
 
 
 @dataclass

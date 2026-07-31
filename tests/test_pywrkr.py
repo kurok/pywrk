@@ -4047,15 +4047,20 @@ class TestThresholdEvaluation(unittest.TestCase):
         self.assertTrue(results[1][2])
 
     def test_empty_latencies(self):
+        """A p95 threshold cannot be satisfied by a run that recorded no p95.
+
+        This test used to assert the opposite -- that a substituted 0.0 made
+        `p95 < 300ms` pass -- which is what let a CI gate report success on a
+        run where the service was never exercised. See #213.
+        """
         stats = self._make_stats(latencies=[], errors=0, total=0)
         thresholds = [
             pywrkr.parse_threshold("p95 < 300ms"),
         ]
         results = pywrkr.evaluate_thresholds(thresholds, stats, 10.0)
         self.assertEqual(len(results), 1)
-        # With 0.0 as actual, 0.0 < 0.3 should pass
-        self.assertTrue(results[0][2])
-        self.assertAlmostEqual(results[0][1], 0.0)
+        self.assertFalse(results[0][2])
+        self.assertIsNone(results[0][1])
 
     def test_error_rate_evaluation(self):
         stats = self._make_stats(errors=10, total=100)

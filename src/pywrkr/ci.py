@@ -69,11 +69,11 @@ def evaluate_from_results(
 ) -> list[ThresholdOutcome]:
     """Check thresholds against an already-written results file.
 
-    A metric the run did not produce counts as a failure rather than a pass.
-    This deliberately differs from :func:`pywrkr.reporting.evaluate_thresholds`,
-    which substitutes 0.0 for a metric it cannot find -- a run that measured
-    nothing would satisfy ``p95 < 500ms``. A gate that silently succeeds
-    because its metric is missing is worse than no gate.
+    A metric the run did not produce counts as a failure rather than a pass: a
+    gate that silently succeeds because its metric is missing is worse than no
+    gate. :func:`pywrkr.reporting.evaluate_thresholds` used to disagree, and
+    substituted 0.0; it was fixed to match in #213, and
+    ``TestBothPathsAgree`` fails if the two ever diverge again.
     """
     outcomes: list[ThresholdOutcome] = []
     for threshold in thresholds or ():

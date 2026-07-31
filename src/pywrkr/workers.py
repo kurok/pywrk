@@ -1899,7 +1899,14 @@ async def run_user_simulation(
 
 
 def _step_passed(step: StepResult, config: AutofindConfig) -> bool:
-    """Check whether a step result meets the autofind thresholds."""
+    """Check whether a step result meets the autofind thresholds.
+
+    A step that measured nothing cannot pass. Its p95 was 0.0 by substitution,
+    which sailed under --max-p95 and let the ramp keep climbing on the strength
+    of a load level that never produced a single response.
+    """
+    if not step.measured or step.total_requests == 0:
+        return False
     if step.error_rate > config.max_error_rate:
         return False
     if step.p95 > config.max_p95:
@@ -1929,6 +1936,8 @@ def _extract_step_result(
         total_requests=stats.total_requests,
         total_errors=stats.errors,
         passed=True,  # will be set below
+        measured=bool(stats.latencies),
+        latency_samples=len(stats.latencies),
     )
     result.passed = _step_passed(result, config)
     return result
@@ -2079,6 +2088,9 @@ def _write_autofind_json(
                 "total_requests": s.total_requests,
                 "total_errors": s.total_errors,
                 "passed": s.passed,
+                # Says whether the p50/p95/p99 above are measurements at all.
+                "measured": s.measured,
+                "latency_samples": s.latency_samples,
             }
             for s in steps
         ],

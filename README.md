@@ -701,6 +701,11 @@ Note the asymmetry for `error_rate`: `+0.5` is half a percentage point, while `+
 **Exit codes:** `0` no regression · `2` an absolute `--threshold` was breached · `3` a `--fail-on`
 rule fired · `1` usage or schema error. When both a threshold and a regression fire, `2` wins.
 
+**A threshold on a metric the run did not produce fails.** If nothing was measured there is no p95,
+and a gate that goes green because it found nothing to check is worse than no gate — the table
+prints `not measured` and the run exits `2`. A genuine zero is still a zero: a run with requests and
+no errors passes `error_rate < 1%`.
+
 **Output formats:** `--format markdown` produces a table ready to paste into a PR comment;
 `--format json` gives a machine-readable verdict. (On the main command the flag is
 `--compare-format`.)
