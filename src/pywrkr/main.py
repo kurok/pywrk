@@ -53,6 +53,12 @@ from pywrkr.distributed import run_master, run_worker_node
 from pywrkr.feeders import FEEDER_STRATEGIES, load_feeder, validate_unique_capacity
 from pywrkr.har_import import HarImportConfig, convert_har
 from pywrkr.multi_url import load_url_file, run_multi_url
+from pywrkr.openapi_import import (
+    SAFE_METHODS,
+    OpenApiImportConfig,
+    SpecError,
+    convert_openapi,
+)
 from pywrkr.reporting import parse_threshold
 from pywrkr.streaming import MIN_EXPORT_INTERVAL
 from pywrkr.traffic_profiles import parse_traffic_profile
@@ -864,6 +870,151 @@ def _add_websocket_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _build_openapi_import_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the `openapi-import` subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="pywrkr openapi-import",
+        description="Generate a load-test scenario from an OpenAPI 3.x document",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Safe methods from a local spec
+  pywrkr openapi-import openapi.json -o scenario.json
+
+  # Straight from a running FastAPI app
+  pywrkr openapi-import http://localhost:8000/openapi.json -o scenario.json
+
+  # Filter, and opt in to mutating methods
+  pywrkr openapi-import spec.yaml --include '/api/v2' --exclude '/admin' \\
+      --method GET --method POST --tag public -o scenario.json
+
+Only GET and HEAD are generated unless you name more with --method:
+benchmarking a DELETE endpoint should be a conscious choice.
+
+Values the spec does not supply become ${placeholder} and are listed at the
+end. Nothing is guessed into looking like real data, and no credentials are
+invented.
+""",
+    )
+    parser.add_argument("spec", help="Path or http(s) URL of the OpenAPI document")
+    parser.add_argument(
+        "-o", "--output", default=None, metavar="FILE", help="Write here instead of stdout"
+    )
+    parser.add_argument(
+        "--format",
+        choices=("scenario", "url-file"),
+        default="scenario",
+        help="Output format (default: scenario)",
+    )
+    parser.add_argument("--name", default=None, help="Scenario name (default: the spec's title)")
+    parser.add_argument(
+        "--method",
+        action="append",
+        default=[],
+        dest="methods",
+        metavar="METHOD",
+        help=f"HTTP method to include; repeatable (default: {', '.join(SAFE_METHODS)})",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        dest="include_patterns",
+        metavar="REGEX",
+        help="Only include paths matching this pattern; repeatable",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        dest="exclude_patterns",
+        metavar="REGEX",
+        help="Exclude paths matching this pattern; repeatable",
+    )
+    parser.add_argument(
+        "--tag",
+        "--tag-filter",
+        action="append",
+        default=[],
+        dest="tags",
+        metavar="TAG",
+        help="Only include operations carrying this tag; repeatable",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Override the spec's servers[] entry",
+    )
+    parser.add_argument(
+        "--assert-status",
+        action="store_true",
+        default=False,
+        help="Add assert_status from each operation's documented success response",
+    )
+    parser.add_argument(
+        "--think-time",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Scenario-wide think time between steps",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="Timeout for fetching a remote spec (default: 30)",
+    )
+    parser.add_argument(
+        "--ssl-verify",
+        action="store_true",
+        default=False,
+        help="Verify TLS certificates when fetching a remote spec",
+    )
+    parser.add_argument(
+        "--ca-bundle", default=None, metavar="FILE", help="CA bundle for the remote spec fetch"
+    )
+    return parser
+
+
+def _run_openapi_import(args: argparse.Namespace) -> None:
+    """Execute the openapi-import subcommand."""
+    config = OpenApiImportConfig(
+        methods=tuple(m.upper() for m in args.methods) or SAFE_METHODS,
+        include_patterns=args.include_patterns,
+        exclude_patterns=args.exclude_patterns,
+        tags=args.tags,
+        base_url=args.base_url,
+        assert_status=args.assert_status,
+        think_time=args.think_time,
+    )
+    try:
+        content, report = convert_openapi(
+            spec_source=args.spec,
+            output_path=args.output,
+            output_format=args.format,
+            config=config,
+            name=args.name,
+            ssl_config=SSLConfig(verify=args.ssl_verify, ca_bundle=args.ca_bundle),
+            timeout=args.timeout,
+        )
+    except SpecError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.output:
+        label = "scenario" if args.format == "scenario" else "URL file"
+        print(f"Wrote {label} to {args.output} ({len(report.scenario.get('steps', []))} steps)")
+    else:
+        print(content, end="")
+
+    summary = report.summary_lines()
+    if summary:
+        print("", file=sys.stderr)
+        for line in summary:
+            print(line, file=sys.stderr)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -1659,6 +1810,10 @@ def main() -> None:
 
     if len(sys.argv) > 1 and sys.argv[1] == "compare":
         _run_compare(_build_compare_parser().parse_args(sys.argv[2:]))
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "openapi-import":
+        _run_openapi_import(_build_openapi_import_parser().parse_args(sys.argv[2:]))
         return
 
     if len(sys.argv) > 1 and sys.argv[1] == "summary":

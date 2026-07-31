@@ -1,0 +1,39 @@
+{
+  "name": "Widget API",
+  "steps": [
+    {
+      "name": "listWidgets",
+      "path": "/widgets?limit=25&cursor=${cursor}",
+      "method": "GET",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "assert_status": 200
+    },
+    {
+      "name": "createWidget",
+      "path": "/widgets",
+      "method": "POST",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "body": {
+        "sku": "ABC-123",
+        "qty": 1,
+        "colour": "red",
+        "note": "string"
+      },
+      "assert_status": 201
+    },
+    {
+      "name": "getWidget",
+      "path": "/widgets/${widgetId}",
+      "method": "GET",
+      "headers": {
+        "Authorization": "Bearer ${token}"
+      },
+      "assert_status": 200
+    }
+  ],
+  "base_url": "https://api.example.com/v1"
+}
