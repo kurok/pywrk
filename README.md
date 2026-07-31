@@ -1529,6 +1529,40 @@ pywrkr --tag environment=production --tag build=v2.1.0 \
     --json results.json -c 100 -d 30 http://localhost:8080/
 ```
 
+#### Distributed streaming
+
+`--export-interval` works on a distributed run too. The master merges what the workers report and
+exports the cluster-wide view on its own interval, so a multi-node soak is visible live rather than
+only after it finishes:
+
+```bash
+# On the master
+pywrkr --master --expect-workers 4 --export-interval 10 \
+       --otel-endpoint http://collector:4318/v1/metrics \
+       -u 4000 -d 1800 https://api.example.com/
+```
+
+Nothing extra is needed on the workers: the master asks for progress in the config it already
+sends, and only when it has somewhere to put the data. A run without an export endpoint puts no
+extra traffic on the wire, and an older master simply never asks.
+
+Master-side exports carry `role="master"` and a `workers_reporting` count so they are separable
+from any per-worker exports, and `export="final"` marks the closing snapshot — which is what leaves
+a run killed mid-flight with its last state rather than nothing.
+
+Two things worth knowing about the numbers:
+
+- **Counters are the sum of each worker's latest report**, so they stay monotonic however the
+  workers' intervals interleave. A counter that goes backwards makes `rate()` report negative
+  throughput.
+- **Percentiles come from the workers' pooled samples**, not from averaging their percentiles —
+  which is not a meaningful operation. Each worker sends a capped, evenly-strided sample of its
+  interval so throughput cannot turn one window into an unbounded payload.
+
+A worker that stops reporting keeps its completed requests in the cumulative totals but drops out
+of the current window, with a warning naming it. Its traffic really happened; it just cannot speak
+for the interval it missed.
+
 ### Multi-URL Mode
 
 Test multiple endpoints in a single benchmark run using a URL file:

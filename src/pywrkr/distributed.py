@@ -10,6 +10,8 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pywrkr.backends import HTTP2_INSTALL_HINT, http2_available
 from pywrkr.compare import parse_fail_on
@@ -41,6 +43,9 @@ from pywrkr.reporting import (
     run_baseline_gate,
 )
 from pywrkr.workers import run_benchmark, run_user_simulation
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pywrkr.streaming import Snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +389,293 @@ def _deserialize_stats(data: dict) -> WorkerStats:
     return ws
 
 
+# ---------------------------------------------------------------------------
+# Progress reporting (worker -> master, during the run)
+# ---------------------------------------------------------------------------
+
+#: Config key the master sets to ask workers for periodic progress. Absent
+#: means "do not send", so a new worker talking to an old master stays silent
+#: instead of provoking an unexpected-message error every interval.
+PROGRESS_INTERVAL_KEY = "progress_interval"
+
+#: Message type carrying one interval's numbers. `result` is untouched, so the
+#: end-of-run path is identical whether or not progress is in use.
+MSG_PROGRESS = "progress"
+
+
+def progress_interval_for(config: BenchmarkConfig) -> "float | None":
+    """The interval to ask workers to report at, or None to ask for nothing.
+
+    Only asked for when the master actually has somewhere to put the data.
+    Absent from the config message otherwise -- which is also exactly what an
+    older master looks like, so a worker's silence is the correct default in
+    both cases and no version negotiation is needed.
+    """
+    if not config.export_interval:
+        return None
+    if not (config.otel_endpoint or config.prom_remote_write):
+        return None
+    return float(config.export_interval)
+
+
+def requested_progress_interval(config_message: dict) -> "float | None":
+    """What the master asked a worker to report at, if anything.
+
+    A bool is not a number here: ``True`` would otherwise be read as a
+    one-second interval.
+    """
+    value = config_message.get(PROGRESS_INTERVAL_KEY)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
+def _serialize_snapshot(snapshot: "Snapshot", seq: int) -> dict:
+    """Wire form of one interval.
+
+    Counters are cumulative for the sending worker, so the master must use each
+    worker's *latest* message rather than summing every message it has received.
+    Raw ``window_samples`` travel because percentiles cannot be merged across
+    nodes by averaging: the master pools the samples and computes its own.
+    """
+    return {
+        "type": MSG_PROGRESS,
+        "seq": seq,
+        "elapsed": round(snapshot.elapsed, 3),
+        "total_requests": snapshot.total_requests,
+        "total_errors": snapshot.total_errors,
+        "total_bytes": snapshot.total_bytes,
+        "window_seconds": round(snapshot.window_seconds, 6),
+        "window_requests": snapshot.window_requests,
+        "window_errors": snapshot.window_errors,
+        "window_samples": [round(x, 6) for x in snapshot.window_samples],
+        "active_users": snapshot.active_users,
+        "final": snapshot.final,
+    }
+
+
+@dataclass
+class WorkerProgress:
+    """The master's view of one worker's latest interval."""
+
+    seq: int
+    elapsed: float
+    total_requests: int
+    total_errors: int
+    total_bytes: int
+    window_seconds: float
+    window_requests: int
+    window_errors: int
+    window_samples: list[float] = field(default_factory=list)
+    active_users: "int | None" = None
+    received_at: float = 0.0
+
+
+def _deserialize_progress(data: dict, received_at: float) -> WorkerProgress:
+    def _num(key: str, default=0):
+        value = data.get(key, default)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+    samples = data.get("window_samples")
+    return WorkerProgress(
+        seq=int(_num("seq")),
+        elapsed=float(_num("elapsed")),
+        total_requests=int(_num("total_requests")),
+        total_errors=int(_num("total_errors")),
+        total_bytes=int(_num("total_bytes")),
+        window_seconds=float(_num("window_seconds")),
+        window_requests=int(_num("window_requests")),
+        window_errors=int(_num("window_errors")),
+        window_samples=[float(x) for x in samples if isinstance(x, (int, float))]
+        if isinstance(samples, list)
+        else [],
+        active_users=data.get("active_users")
+        if isinstance(data.get("active_users"), int)
+        else None,
+        received_at=received_at,
+    )
+
+
+class ProgressAggregator:
+    """Merges the workers' latest intervals into one cluster-wide snapshot.
+
+    Two things this has to get right:
+
+    * **Counters must not go backwards.** Each worker's numbers are cumulative
+      for that worker, so the cluster total is the sum of each worker's *latest*
+      report. Summing everything received instead would climb far too fast and
+      would not be monotonic when reports arrive out of step.
+    * **A worker that stops reporting is not a worker that stopped working, and
+      neither is it one still going.** Its last figures stay in the cumulative
+      totals -- the requests it sent really happened -- but it is excluded from
+      the current window and named as stale, so a partitioned node cannot make
+      the cluster look busier than it is.
+    """
+
+    def __init__(self, expect_workers: int, interval: float) -> None:
+        self.expect_workers = expect_workers
+        self.interval = max(interval, 0.001)
+        self._latest: dict[int, WorkerProgress] = {}
+        self._consumed_seq: dict[int, int] = {}
+
+    def record(self, index: int, progress: WorkerProgress) -> None:
+        """Take one worker's report, ignoring one that arrives out of order."""
+        previous = self._latest.get(index)
+        if previous is not None and progress.seq < previous.seq:
+            logger.debug(
+                "Master: ignoring out-of-order progress from worker %s (seq %s < %s)",
+                index,
+                progress.seq,
+                previous.seq,
+            )
+            return
+        self._latest[index] = progress
+
+    @property
+    def reporting(self) -> int:
+        return len(self._latest)
+
+    def stale_workers(self, now: float, max_age: "float | None" = None) -> list[int]:
+        """Workers whose last report is too old to count as current."""
+        limit = max_age if max_age is not None else self.interval * 3
+        return sorted(i for i, p in self._latest.items() if now - p.received_at > limit)
+
+    def build(self, now: float, elapsed: float, final: bool = False) -> "Snapshot | None":
+        """One cluster snapshot, or None when no worker has reported yet."""
+        from pywrkr.streaming import Snapshot, window_percentiles
+
+        if not self._latest:
+            return None
+        stale = set(self.stale_workers(now))
+
+        total_requests = sum(p.total_requests for p in self._latest.values())
+        total_errors = sum(p.total_errors for p in self._latest.values())
+        total_bytes = sum(p.total_bytes for p in self._latest.values())
+
+        samples: list[float] = []
+        window_requests = 0
+        window_errors = 0
+        window_seconds = 0.0
+        for index, progress in self._latest.items():
+            if index in stale or self._consumed_seq.get(index) == progress.seq:
+                # Either the worker has gone quiet, or this is the same report
+                # the previous window already counted. Reusing it would invent
+                # traffic that did not happen in this interval.
+                continue
+            self._consumed_seq[index] = progress.seq
+            samples.extend(progress.window_samples)
+            window_requests += progress.window_requests
+            window_errors += progress.window_errors
+            window_seconds = max(window_seconds, progress.window_seconds)
+
+        return Snapshot(
+            elapsed=elapsed,
+            total_requests=total_requests,
+            total_errors=total_errors,
+            total_bytes=total_bytes,
+            window_seconds=window_seconds or self.interval,
+            window_requests=window_requests,
+            window_errors=window_errors,
+            window_percentiles=window_percentiles(samples),
+            window_latency=_window_latency_of(samples),
+            active_users=_sum_active_users(self._latest, stale),
+            final=final,
+        )
+
+
+def _window_latency_of(samples: list[float]) -> dict[str, float]:
+    from pywrkr.streaming import _window_latency
+
+    return _window_latency(samples)
+
+
+def _sum_active_users(latest: dict[int, WorkerProgress], stale: "set[int]") -> "int | None":
+    counts = [
+        p.active_users for i, p in latest.items() if i not in stale and p.active_users is not None
+    ]
+    return sum(counts) if counts else None
+
+
+class _MasterExporter:
+    """Exports the cluster-wide snapshot on the master's own interval.
+
+    Sampling is driven by the master's clock rather than by message arrival, so
+    one chatty worker cannot pull the export cadence off the interval that was
+    asked for.
+    """
+
+    def __init__(
+        self,
+        config: BenchmarkConfig,
+        aggregator: ProgressAggregator,
+        interval: float,
+        start: float,
+    ) -> None:
+        self._config = config
+        self._aggregator = aggregator
+        self._interval = interval
+        self._start = start
+        self._task: "asyncio.Task | None" = None
+        self._stop = asyncio.Event()
+        self.exported = 0
+        self.failed = 0
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._loop())
+
+    async def _loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        while not self._stop.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+                return
+            self._export(loop.time(), final=False)
+
+    async def aclose(self, now: float) -> None:
+        """Emit a final cluster snapshot and stop.
+
+        The final export matters most for a run cut short: the master otherwise
+        has nothing at all, even though every worker had numbers the whole time.
+        """
+        if self._task is None:
+            return
+        self._stop.set()
+        self._export(now, final=True)
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
+
+    def _export(self, now: float, final: bool) -> None:
+        snapshot = self._aggregator.build(now, elapsed=now - self._start, final=final)
+        if snapshot is None:
+            return
+        stale = self._aggregator.stale_workers(now)
+        if stale:
+            logger.warning(
+                "Master: worker(s) %s have not reported for more than %.1fs; excluded from "
+                "this interval",
+                ", ".join(str(i) for i in stale),
+                self._interval * 3,
+            )
+        from pywrkr.reporting import export_to_otel, export_to_prometheus
+
+        results = snapshot.to_results_dict()
+        tags = dict(self._config.tags)
+        tags["export"] = "final" if final else "interval"
+        tags["role"] = "master"
+        tags["workers_reporting"] = str(self._aggregator.reporting - len(stale))
+        ok = True
+        if self._config.otel_endpoint:
+            ok = export_to_otel(results, self._config.otel_endpoint, tags) and ok
+        if self._config.prom_remote_write:
+            ok = export_to_prometheus(results, self._config.prom_remote_write, tags) and ok
+        if ok:
+            self.exported += 1
+        else:
+            self.failed += 1
+
+
 async def _send_msg(writer: asyncio.StreamWriter, obj: dict) -> None:
     """Send a length-prefixed JSON message."""
     payload = json.dumps(obj).encode()
@@ -451,6 +743,10 @@ async def run_master(
 
     worker_connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
     ready_event = asyncio.Event()
+    # Bound before the try: the cleanup below runs even when the master is
+    # cancelled while still waiting for workers, long before these are built.
+    aggregator: "ProgressAggregator | None" = None
+    master_exporter: "_MasterExporter | None" = None
 
     async def _authenticate_worker(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -542,14 +838,15 @@ async def run_master(
 
         logger.info("Master: all %s workers connected. Distributing config...", expect_workers)
         config_data = _serialize_config(config)
+        progress_interval = progress_interval_for(config)
         for shard_index, (_, writer) in enumerate(selected):
-            await _send_msg(
-                writer,
-                {
-                    "type": "config",
-                    "config": _shard_config_feeders(config_data, shard_index, expect_workers),
-                },
-            )
+            message: dict = {
+                "type": "config",
+                "config": _shard_config_feeders(config_data, shard_index, expect_workers),
+            }
+            if progress_interval:
+                message[PROGRESS_INTERVAL_KEY] = progress_interval
+            await _send_msg(writer, message)
 
         logger.info("Master: benchmark running on all workers...")
 
@@ -560,14 +857,23 @@ async def run_master(
         deadline = loop.time() + (config.duration * 3 + 120 if config.duration else 600)
         all_stats: list[WorkerStats] = []
         worker_durations: list[float] = []
+        if progress_interval:
+            aggregator = ProgressAggregator(expect_workers, progress_interval)
+            master_exporter = _MasterExporter(config, aggregator, progress_interval, loop.time())
+            await master_exporter.start()
 
         async def _collect_one(
             idx: int, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         ):
             try:
-                msg = await asyncio.wait_for(
-                    _recv_msg(reader), timeout=max(0.0, deadline - loop.time())
-                )
+                while True:
+                    msg = await asyncio.wait_for(
+                        _recv_msg(reader), timeout=max(0.0, deadline - loop.time())
+                    )
+                    if msg.get("type") != MSG_PROGRESS:
+                        break
+                    if aggregator is not None:
+                        aggregator.record(idx, _deserialize_progress(msg, loop.time()))
                 if msg.get("type") == "error":
                     # A worker refused the run outright (e.g. it lacks the
                     # HTTP/2 backend). Say why instead of reporting a run that
@@ -602,6 +908,12 @@ async def run_master(
             *(_collect_one(i, reader, writer) for i, (reader, writer) in enumerate(selected))
         )
     finally:
+        if master_exporter is not None:
+            # aclose() is idempotent, and emitting the final cluster snapshot
+            # here rather than on the happy path is what makes a run killed
+            # mid-flight still leave its last interval behind.
+            with contextlib.suppress(asyncio.CancelledError):
+                await master_exporter.aclose(asyncio.get_event_loop().time())
         if not server_closed:
             server.close()
 
@@ -682,6 +994,98 @@ async def run_master(
     return merged, exit_code
 
 
+def _current_loop() -> "asyncio.AbstractEventLoop | None":
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+class _ProgressReporter:
+    """Forwards a worker's interval snapshots to the master.
+
+    Snapshots are queued and sent by one task so the stream has a single writer:
+    interleaving frames from two coroutines would corrupt both messages. A queue
+    that fills is drained of its oldest entry rather than blocking the run --
+    the newest interval is the one worth having, and the drop is counted.
+
+    :meth:`submit` is called from the exporter's executor thread, not from the
+    event loop, so every queue touch is bounced back onto the loop with
+    ``call_soon_threadsafe``. ``asyncio.Queue`` is not thread-safe: a
+    ``put_nowait`` from another thread can enqueue without waking the getter,
+    which leaves the sender parked forever on a queue that is not empty.
+    """
+
+    _QUEUE_SIZE = 8
+
+    def __init__(self, writer: asyncio.StreamWriter) -> None:
+        self._writer = writer
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=self._QUEUE_SIZE)
+        self._task: "asyncio.Task | None" = None
+        self._loop_ref: "asyncio.AbstractEventLoop | None" = None
+        self._seq = 0
+        self.sent = 0
+        self.dropped = 0
+        self.failed = 0
+
+    async def start(self) -> None:
+        self._loop_ref = asyncio.get_running_loop()
+        self._task = asyncio.create_task(self._loop())
+
+    def submit(self, snapshot: "Snapshot") -> None:
+        """Called from the exporter's thread; must never block the run."""
+        self._seq += 1
+        payload = _serialize_snapshot(snapshot, self._seq)
+        loop = self._loop_ref
+        if loop is None or loop is _current_loop():
+            self._enqueue(payload)
+            return
+        loop.call_soon_threadsafe(self._enqueue, payload)
+
+    def _enqueue(self, payload: dict) -> None:
+        """Always runs on the event loop that owns the queue."""
+        try:
+            self._queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self._queue.get_nowait()
+                self._queue.task_done()
+            self.dropped += 1
+            with contextlib.suppress(asyncio.QueueFull):
+                self._queue.put_nowait(payload)
+
+    async def _loop(self) -> None:
+        while True:
+            payload = await self._queue.get()
+            try:
+                await _send_msg(self._writer, payload)
+                self.sent += 1
+            except (ConnectionError, OSError) as e:
+                # The master went away. The run continues -- it is the thing
+                # being measured -- and the result send will report the failure.
+                self.failed += 1
+                logger.debug("Worker: could not send progress: %s", e)
+            finally:
+                self._queue.task_done()
+
+    async def aclose(self) -> None:
+        if self._task is None:
+            return
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._queue.join(), timeout=5.0)
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
+        if self.dropped or self.failed:
+            logger.warning(
+                "Worker: progress reporting sent %d, dropped %d, failed %d",
+                self.sent,
+                self.dropped,
+                self.failed,
+            )
+
+
 async def run_worker_node(
     master_host: str, master_port: int, worker_secret: str | None = None
 ) -> None:
@@ -757,14 +1161,35 @@ async def run_worker_node(
 
         logger.info("Worker: starting benchmark...")
 
+        # The master asks for progress by putting an interval in the config
+        # message. Absent -- which is also what an old master looks like -- means
+        # stay silent, so this never sends a message the peer cannot read.
+        progress_interval = requested_progress_interval(msg)
+        reporter: "_ProgressReporter | None" = None
+        if progress_interval is not None:
+            config.export_interval = float(progress_interval)
+            reporter = _ProgressReporter(writer)
+            await reporter.start()
+            logger.info("Worker: reporting progress to master every %.1fs", progress_interval)
+
         # Measure real wall-clock so the master can report throughput against the
         # actual run window in -n (request-count) mode instead of a fixed guess.
         run_start = time.monotonic()
         # Run the appropriate benchmark
-        if config.users is not None:
-            stats, _ = await run_user_simulation(config)
-        else:
-            stats, _ = await run_benchmark(config)
+        try:
+            if config.users is not None:
+                stats, _ = await run_user_simulation(
+                    config, on_snapshot=reporter.submit if reporter else None
+                )
+            else:
+                stats, _ = await run_benchmark(
+                    config, on_snapshot=reporter.submit if reporter else None
+                )
+        finally:
+            # Stopped before the result is sent: two writers on one stream would
+            # interleave frames and corrupt both messages.
+            if reporter is not None:
+                await reporter.aclose()
         run_duration = time.monotonic() - run_start
 
         logger.info(

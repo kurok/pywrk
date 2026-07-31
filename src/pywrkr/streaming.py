@@ -27,7 +27,7 @@ import math
 import statistics
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from pywrkr.config import WorkerStats
 
@@ -53,6 +53,10 @@ _QUEUE_SIZE = 8
 
 #: Percentiles reported per window.
 _WINDOW_PERCENTILES = (50, 95, 99)
+
+#: Cap on raw samples carried with one snapshot. Enough for a stable p99 while
+#: keeping a distributed interval's payload bounded regardless of throughput.
+_MAX_WIRE_SAMPLES = 1000
 
 
 def window_percentiles(samples: Sequence[float]) -> dict[str, float]:
@@ -88,6 +92,12 @@ class Snapshot:
     active_users: "int | None" = None
     target_rate: "float | None" = None
     final: bool = False
+    #: The interval's raw latency samples, retained only when a sink asks for
+    #: them. A distributed master needs them: percentiles cannot be merged
+    #: across nodes by averaging, so it has to pool the samples and compute its
+    #: own. Off by default -- a single-node run would pay for a copy it never
+    #: reads.
+    window_samples: tuple[float, ...] = ()
 
     @property
     def requests_per_sec(self) -> float:
@@ -135,6 +145,9 @@ class StreamingExporter:
         rate_limiter: "RateLimiter | None" = None,
         start_time: "float | None" = None,
         queue_size: int = _QUEUE_SIZE,
+        sinks: "Sequence[Callable[[Snapshot], bool]] | None" = None,
+        keep_samples: bool = False,
+        max_samples: int = _MAX_WIRE_SAMPLES,
     ) -> None:
         self._config = config
         self._all_stats = all_stats
@@ -145,6 +158,20 @@ class StreamingExporter:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
         self._tasks: list[asyncio.Task] = []
         self._stop = asyncio.Event()
+        # Where snapshots go. The default is the OTel/Prometheus push, present
+        # only when an endpoint is actually configured; a distributed worker
+        # adds one that forwards to the master, so the sampling, the bounded
+        # queue and the drop accounting are shared rather than reimplemented
+        # alongside it.
+        # A flag rather than `self._push` in the list: binding the method here
+        # would freeze it, so patching `_push` (which tests and subclasses do)
+        # would silently stop taking effect.
+        self._push_to_endpoints = bool(config.otel_endpoint or config.prom_remote_write)
+        self._sinks: list[Callable[[Snapshot], bool]] = list(sinks) if sinks else []
+        if sinks is not None:
+            self._push_to_endpoints = False
+        self._keep_samples = keep_samples
+        self._max_samples = max_samples
 
         self._last_mark = self._start
         self._last_requests = 0
@@ -227,6 +254,7 @@ class StreamingExporter:
             window_errors=max(total_errors - self._last_errors, 0),
             window_percentiles=window_percentiles(samples),
             window_latency=_window_latency(samples),
+            window_samples=self._wire_samples(samples),
             active_users=self._active_users.count if self._active_users is not None else None,
             target_rate=_current_target_rate(self._rate_limiter),
             final=final,
@@ -254,12 +282,35 @@ class StreamingExporter:
 
     # -- sending -----------------------------------------------------------
 
+    def add_sink(self, sink: "Callable[[Snapshot], bool]") -> None:
+        """Send snapshots here as well as anywhere already configured.
+
+        The sink is called **from an executor thread**, not from the event loop:
+        the built-in one does blocking HTTP, which is why the send path runs
+        there at all. A sink that touches loop-owned state must bounce it back
+        with ``call_soon_threadsafe`` -- an ``asyncio.Queue.put_nowait`` from
+        another thread can enqueue without waking the getter.
+        """
+        self._sinks.append(sink)
+
+    def _wire_samples(self, samples: list[float]) -> tuple[float, ...]:
+        """Samples to carry with the snapshot, capped so one interval cannot
+        put an unbounded payload on the wire."""
+        if not self._keep_samples or not samples:
+            return ()
+        if len(samples) <= self._max_samples:
+            return tuple(samples)
+        # Even stride rather than the first N: the first N would be whatever the
+        # earliest workers happened to record, which is not the interval.
+        step = len(samples) / self._max_samples
+        return tuple(samples[int(i * step)] for i in range(self._max_samples))
+
     async def _send_loop(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             snapshot = await self._queue.get()
             try:
-                ok = await loop.run_in_executor(None, self._push, snapshot)
+                ok = await loop.run_in_executor(None, self._deliver, snapshot)
                 if ok:
                     self.sent += 1
                 else:
@@ -269,6 +320,19 @@ class StreamingExporter:
                 logger.debug("Streaming export raised", exc_info=True)
             finally:
                 self._queue.task_done()
+
+    def _deliver(self, snapshot: Snapshot) -> bool:
+        """Hand the snapshot to every sink. One failing does not skip the rest."""
+        ok = True
+        if self._push_to_endpoints:
+            ok = self._push(snapshot) and ok
+        for sink in self._sinks:
+            try:
+                ok = sink(snapshot) and ok
+            except Exception:  # pragma: no cover - a sink must not kill the run
+                logger.debug("Streaming sink raised", exc_info=True)
+                ok = False
+        return ok
 
     def _push(self, snapshot: Snapshot) -> bool:
         """Blocking push, always called in an executor thread."""
