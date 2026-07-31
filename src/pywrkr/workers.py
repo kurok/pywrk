@@ -54,7 +54,7 @@ from pywrkr.reporting import (
     run_baseline_gate,
     run_observability_exports,
 )
-from pywrkr.streaming import StreamingExporter
+from pywrkr.streaming import Snapshot, StreamingExporter
 from pywrkr.templating import (
     TemplateError,
     TemplateFunctions,
@@ -1332,20 +1332,37 @@ def _create_streaming_exporter(
     *,
     active_users: "ActiveUsers | None" = None,
     rate_limiter: "RateLimiter | None" = None,
+    on_snapshot: "Callable[[Snapshot], None] | None" = None,
 ) -> "StreamingExporter | None":
-    """Build the streaming exporter, or None when nothing asked for one."""
+    """Build the streaming exporter, or None when nothing asked for one.
+
+    *on_snapshot* is how a distributed worker forwards its interval snapshots
+    to the master. It is its own reason to sample, so an exporter is built for
+    it even with no OTel/Prometheus endpoint configured -- and it asks for the
+    raw samples the master needs, since percentiles cannot be merged across
+    nodes by averaging them.
+    """
     if not config.export_interval:
         return None
-    if not (config.otel_endpoint or config.prom_remote_write):
+    if not (config.otel_endpoint or config.prom_remote_write) and on_snapshot is None:
         return None
-    return StreamingExporter(
+    exporter = StreamingExporter(
         config,
         all_stats,
         config.export_interval,
         active_users=active_users,
         rate_limiter=rate_limiter,
         start_time=start_time,
+        keep_samples=on_snapshot is not None,
     )
+    if on_snapshot is not None:
+
+        def _forward(snapshot: "Snapshot") -> bool:
+            on_snapshot(snapshot)
+            return True
+
+        exporter.add_sink(_forward)
+    return exporter
 
 
 def _create_rate_limiter(config: BenchmarkConfig, duration: float | None) -> RateLimiter | None:
@@ -1543,6 +1560,7 @@ async def run_benchmark(
     on_tick: "Callable[[LiveStats], None] | None" = None,
     install_signal_handlers: bool = True,
     on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
+    on_snapshot: "Callable[[Snapshot], None] | None" = None,
 ) -> tuple[WorkerStats, int]:
     """Run a fixed-concurrency benchmark and return merged stats with exit code.
 
@@ -1681,7 +1699,9 @@ async def run_benchmark(
         on_tick=on_tick,
     )
 
-    streaming = _create_streaming_exporter(config, all_stats, start_time, rate_limiter=rate_limiter)
+    streaming = _create_streaming_exporter(
+        config, all_stats, start_time, rate_limiter=rate_limiter, on_snapshot=on_snapshot
+    )
     if streaming is not None:
         await streaming.start()
 
@@ -1712,6 +1732,7 @@ async def run_user_simulation(
     on_tick: "Callable[[LiveStats], None] | None" = None,
     install_signal_handlers: bool = True,
     on_complete: "Callable[[WorkerStats, float, int], None] | None" = None,
+    on_snapshot: "Callable[[Snapshot], None] | None" = None,
 ) -> tuple[WorkerStats, int]:
     """Run a virtual-user load test with ramp-up and think time.
 
@@ -1809,7 +1830,12 @@ async def run_user_simulation(
     )
 
     streaming = _create_streaming_exporter(
-        config, all_stats, start_time, active_users=active_users, rate_limiter=rate_limiter
+        config,
+        all_stats,
+        start_time,
+        active_users=active_users,
+        rate_limiter=rate_limiter,
+        on_snapshot=on_snapshot,
     )
     if streaming is not None:
         await streaming.start()
