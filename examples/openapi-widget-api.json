@@ -1,0 +1,53 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "Widget API", "version": "1.0.0"},
+  "servers": [{"url": "https://api.example.com/v1"}],
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+    "schemas": {
+      "Widget": {
+        "type": "object",
+        "required": ["sku", "qty"],
+        "properties": {
+          "sku": {"type": "string", "example": "ABC-123"},
+          "qty": {"type": "integer", "default": 1},
+          "colour": {"type": "string", "enum": ["red", "blue"]},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  },
+  "security": [{"bearerAuth": []}],
+  "paths": {
+    "/widgets": {
+      "get": {
+        "operationId": "listWidgets",
+        "tags": ["public"],
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 25}},
+          {"name": "cursor", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      },
+      "post": {
+        "operationId": "createWidget",
+        "tags": ["public"],
+        "requestBody": {"content": {"application/json": {
+          "schema": {"$ref": "#/components/schemas/Widget"}}}},
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/widgets/{widgetId}": {
+      "get": {
+        "operationId": "getWidget",
+        "tags": ["public"],
+        "parameters": [{"name": "widgetId", "in": "path", "required": true,
+                        "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {"200": {"description": "ok"}}
+      },
+      "delete": {"operationId": "deleteWidget", "responses": {"204": {"description": "gone"}}}
+    },
+    "/admin/flush": {"get": {"operationId": "flush", "tags": ["admin"],
+                             "responses": {"200": {"description": "ok"}}}}
+  }
+}
