@@ -607,6 +607,10 @@ class Threshold:
     operator: str  # e.g. "<"
     value: float  # in seconds for latency, percent for error_rate, raw for rps
     raw_expr: str  # original string for display
+    #: Scenario step this applies to, from ``step:<name> <metric> ...``. None is
+    #: the aggregate across every request, which for a scenario is a blend of
+    #: all its steps.
+    step: "str | None" = None
 
 
 @dataclass

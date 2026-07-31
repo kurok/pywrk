@@ -710,6 +710,40 @@ no errors passes `error_rate < 1%`.
 `--format json` gives a machine-readable verdict. (On the main command the flag is
 `--compare-format`.)
 
+**Per-step thresholds.** For a scenario, the aggregate `p95` is a blend of every step — so a
+checkout flow whose login is 1ms and whose payment call is 250ms sits comfortably under an aggregate
+budget while the step that matters is five times over it, and *adding fast steps improves the
+number*. Scope a threshold to one step instead:
+
+```bash
+pywrkr --scenario checkout.json -u 50 -d 60 \
+       --threshold "step:login p95 < 200ms" \
+       --threshold "step:payment p99 < 3s" \
+       --threshold "step:payment error_rate < 0.5%" \
+       --threshold "p95 < 1s"                        # the aggregate still works
+```
+
+```
+  Expression                    Actual   Status
+  step:login p95 < 50ms         1.07ms     PASS
+  step:payment p95 < 50ms     253.91ms     FAIL
+  p95 < 500ms                 253.91ms     PASS   <-- the blend hides it
+```
+
+Every metric the aggregate form accepts works per step. The step name runs from `step:` to the
+metric, so a name containing spaces or colons — which the default `METHOD /path` naming produces —
+needs no quoting.
+
+Two failures are caught **before any load is applied**, because they need different fixes: a
+`step:` threshold with no `--scenario` has no steps to measure, and a step name the scenario does not
+define is a typo (the error lists the names it does define). A step that exists but never ran —
+because an earlier step aborted the iteration — reports `not measured` and fails, like any other
+unmeasurable metric.
+
+Note the spelling difference from `--fail-on`, which is one token and so uses a dot:
+`--fail-on "step:checkout.mean > +20ms"` against a baseline, `--threshold "step:checkout p95 < 800ms"`
+for an absolute gate.
+
 **Comparability.** Results carry a `schema_version` and a snapshot of the load shape (mode,
 connections, users, duration, host). Comparing a 10-user run against a 1000-user baseline is
 arithmetically fine and completely meaningless, so `compare` warns when they differ — and fails

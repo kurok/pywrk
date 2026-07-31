@@ -80,6 +80,9 @@ def _serialize_threshold(th: Threshold) -> dict:
         "operator": th.operator,
         "value": th.value,
         "raw_expr": th.raw_expr,
+        # Without this a per-step threshold would arrive at the worker as an
+        # aggregate one, silently gating on a different number.
+        "step": th.step,
     }
 
 
@@ -89,6 +92,7 @@ def _deserialize_threshold(data: dict) -> Threshold:
         operator=data["operator"],
         value=data["value"],
         raw_expr=data["raw_expr"],
+        step=data.get("step"),
     )
 
 
