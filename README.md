@@ -919,6 +919,104 @@ See [`examples/scenario-websocket.json`](examples/scenario-websocket.json).
 **Not supported yet:** distributed WebSocket mode (`--master` rejects a `ws://` target; a mixed
 HTTP/WebSocket *scenario* does run distributed), Socket.IO/SockJS protocol layers, and gRPC/SSE.
 
+### pytest Integration
+
+Performance testing usually lives in its own silo, runs rarely, and rots. Being pure Python is
+pywrkr's structural advantage over wrk/k6/Gatling, and this is what cashes it in: an SLO becomes a
+test in the suite that already exists, failing a PR the way a unit test does.
+
+```bash
+pip install "pywrkr[pytest]"
+```
+
+The plugin registers itself; there is nothing to enable.
+
+```python
+import pytest
+
+
+@pytest.mark.pywrkr(
+    url="/health", connections=20, duration=10, thresholds=["p95 < 200ms", "error_rate < 1%"]
+)
+def test_health_meets_slo(pywrkr_result):
+    assert 200 in pywrkr_result.status_codes
+
+
+def test_search_stays_under_budget(pywrkr_bench):
+    result = pywrkr_bench("/api/search?q=widget", connections=50, duration=15)
+    assert result.percentiles.p95 < 0.5
+    assert result.requests_per_sec > 100
+```
+
+A breached threshold **fails the test**, naming the metric, the bound and what was measured:
+
+```
+E   Failed: pywrkr threshold(s) breached for /health:
+E     - p95 < 200ms (measured p95 = 412.30ms)
+```
+
+**Benchmarks skip by default.** They put real load on whatever the base URL points at, and a test
+suite is run casually and often. Pass `--pywrkr-run` to execute them; without it they skip with a
+reason saying so. Put the flag in your performance CI job, not in `addopts`.
+
+| Option / setting | Where | Description |
+|------------------|-------|-------------|
+| `--pywrkr-run` | CLI | Actually run the benchmarks. Required. |
+| `--pywrkr-json DIR` | CLI | Write each benchmark's JSON result into `DIR`, named after the test's node id. Feeds `pywrkr compare`. |
+| `pywrkr_base_url` | ini | Prepended to a relative target, so tests name paths and the host stays an environment detail. An absolute URL in a test always wins. |
+| `pywrkr_duration` | ini | Default duration in seconds. |
+| `pywrkr_connections` | ini | Default connection count. |
+
+```ini
+[pytest]
+pywrkr_base_url = http://localhost:8080
+pywrkr_duration = 10
+pywrkr_connections = 20
+```
+
+`pywrkr_bench(url, **options)` takes any [`Config`](#library-usage) field, so the load shape is not
+limited to connections and duration — `users`, `ramp_up`, `think_time`, `rate`, `scenario`,
+`method`/`body`/`headers` all work. It returns the same `Result` object as `pywrkr.run()`.
+
+**Feeding the baseline workflow.** `--pywrkr-json` writes one schema-valid file per test, which is
+exactly what `pywrkr compare` reads:
+
+```bash
+pytest -m pywrkr --pywrkr-run --pywrkr-json perf-results/
+pywrkr compare 'baselines/*.json' perf-results/tests-test_perf.py-test_health.json \
+       --fail-on "p95 > +10%"
+```
+
+**Terminal summary.** After the run, every benchmark that executed is tabulated:
+
+```
+============================= pywrkr benchmarks =============================
+Test                       Requests      Req/s        p50        p95        p99   Errors  Verdict
+-------------------------------------------------------------------------------------------------
+test_health_meets_slo        98,412    9,841.2     1.94ms     3.11ms     5.02ms    0.00%  PASS
+test_search_under_budget     12,004      800.3    58.10ms   412.30ms   890.00ms    0.02%  FAIL
+                                breached: p95 < 200ms
+```
+
+**pytest-xdist is refused, deliberately.** `--pywrkr-run` together with `-n` is a usage error, not
+a missing feature: benchmarks running in parallel contend for the same CPU, sockets and target, so
+four workers each opening 50 connections put 200 on the host while each reports 50. Every number
+produced would be wrong in a way nothing downstream could detect. Run benchmarks in their own
+non-parallel invocation:
+
+```bash
+pytest -n auto -m "not pywrkr"                  # the fast suite, in parallel
+pytest -p no:xdist -m pywrkr --pywrkr-run       # the benchmarks, alone
+```
+
+**Zero cost when unused.** pytest imports every registered plugin at startup, so the plugin is a
+top-level `pytest_pywrkr` module rather than `pywrkr.pytest_plugin` — anything under `pywrkr.`
+would pull in the package `__init__` and its whole public API on every pytest run of any project
+that merely depends on pywrkr. Nothing but pytest is imported at module scope; the benchmark
+runner is imported inside the fixture that needs it.
+
+See [`examples/test_perf_example.py`](examples/test_perf_example.py).
+
 ### Data-Driven Testing
 
 Identical payloads systematically overstate cache performance and understate database and

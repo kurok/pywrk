@@ -30,18 +30,32 @@ dependencies = [
 tui = ["rich>=13.0"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 http2 = ["httpx[http2]>=0.27"]
-all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "httpx[http2]>=0.27"]
+all = ["rich>=13.0", "opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "httpx[http2]>=0.27", "pytest>=7.0"]
 # pyyaml is test-only: the structural checks on action.yml and the workflows
 # must run for real, not importorskip themselves into silence.
 dev = ["pytest>=9.0.3", "pytest-xdist>=3.0", "pytest-cov>=4.0", "aiohttp>=3.14.0", "httpx[http2]>=0.27", "hypercorn>=0.17", "pyyaml>=6.0"]
 lint = ["mypy>=1.0", "ruff>=0.1.0"]
 security = ["bandit>=1.7", "pip-audit>=2.6"]
+# The plugin itself imports nothing but pytest; the extra exists so
+# `pip install pywrkr[pytest]` reads as intent rather than as a guess.
+pytest = ["pytest>=7.0"]
 
 [project.scripts]
 pywrkr = "pywrkr.main:main"
 
+[project.entry-points.pytest11]
+pywrkr = "pytest_pywrkr"
+
 [project.urls]
 Homepage = "https://github.com/kurok/pywrkr"
+
+[tool.setuptools]
+# The pytest plugin is a top-level module, not part of the pywrkr package.
+# pytest imports every registered plugin at startup, and importing anything
+# under `pywrkr.` would drag in the package __init__ -- ~90ms added to every
+# pytest run of any project that merely depends on pywrkr.
+package-dir = {"" = "src"}
+py-modules = ["pytest_pywrkr"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
