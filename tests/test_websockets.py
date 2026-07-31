@@ -580,8 +580,11 @@ class TestWebSocketBenchmark(WsServerCase):
             stats, _ = await run_websocket_benchmark(config, install_signal_handlers=False)
             wall = time.monotonic() - started
 
-        # The close really did go unanswered, so there is a gap to get wrong.
-        self.assertEqual(stats.ws.close_unacked, 2)
+        # At least one close went unanswered, so there really is a teardown gap
+        # to get wrong. Not both: whether the peer's reader happens to process
+        # the close frame before the handler notices is a race, and this test is
+        # about the duration, not about how many sockets lost it.
+        self.assertGreaterEqual(stats.ws.close_unacked, 1)
         self.assertGreater(wall, 1.0)
         self.assertLess(reported[0], 0.9, f"teardown leaked into the duration: {reported[0]}")
         self.assertGreater(reported[0], 0.4)
