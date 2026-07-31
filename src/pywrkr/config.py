@@ -574,6 +574,10 @@ class BenchmarkConfig:
     compare_format: str = "table"
     # WebSocket mode settings; None for an ordinary HTTP run.
     websocket: "WebSocketConfig | None" = None
+    # Read the response body. False releases the connection instead, which is
+    # opt-in because it changes what is measured -- see needs_body() and the
+    # README. A step that inspects the body reads it regardless.
+    read_body: bool = True
 
 
 @dataclass

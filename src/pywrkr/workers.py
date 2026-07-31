@@ -336,6 +336,35 @@ class LiveDashboard:
 # ---------------------------------------------------------------------------
 
 
+def needs_body(config: BenchmarkConfig, step=None) -> bool:
+    """Whether this request's response body has to be read.
+
+    ``--no-read-body`` is a request, not an instruction: anything that actually
+    inspects the body overrides it, so the flag cannot silently break a scenario
+    that depends on response content. Computed once per step rather than per
+    request.
+
+    Note what "not reading" costs. ``resp.release()`` returns before the body has
+    arrived, so the measured latency stops including receipt of the response --
+    which is where the apparent speed-up comes from, not from the avoided
+    allocation. See #217 for the measurements.
+    """
+    if config.read_body:
+        return True
+    if config.verify_content_length:
+        return True
+    # -v 3 and above logs response bodies, so it needs them.
+    if config.verbosity >= 3:
+        return True
+    if step is None:
+        return False
+    if step.extract:
+        return True
+    # StepAssertions.needs_body already answers this for the assertion rules.
+    assertions = getattr(step, "assertions", None)
+    return bool(assertions is not None and assertions.needs_body)
+
+
 def make_url(url: str, random_param: bool) -> str:
     """Return the URL, optionally appending a unique cache-busting query parameter.
 
@@ -534,6 +563,7 @@ async def _execute_request(
     assertions: "StepAssertions | None" = None,
     log_prefix: str = "",
     capture_response: bool = False,
+    read_body: bool = True,
     transport_errors: tuple[type[BaseException], ...] = _DEFAULT_TRANSPORT_ERRORS,
 ) -> _RequestResult:
     """Execute a single HTTP request and record stats.
@@ -547,7 +577,9 @@ async def _execute_request(
     same loop drives HTTP/1.1 and HTTP/2. *transport_errors* comes from the
     backend, since each client library raises its own exception family.
 
-    The response body is always read; *capture_response* only controls whether
+    *read_body* False releases the connection instead of reading, which changes
+    what the latency covers -- see :func:`needs_body`. *capture_response* controls
+    whether
     the bytes and headers are handed back for scenario variable extraction.
 
     Returns a _RequestResult with outcome details.
@@ -555,7 +587,9 @@ async def _execute_request(
     result = _RequestResult()
     req_start = time.monotonic()
     try:
-        resp = await session.send(method, url, headers, body, timeout, trace_ctx)
+        resp = await session.send(
+            method, url, headers, body, timeout, trace_ctx, read_body=read_body
+        )
         data = resp.body
         latency = time.monotonic() - req_start
         result.latency = latency
@@ -738,6 +772,7 @@ async def worker(
 
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
+    read_body = needs_body(config)
     client_timeout = config.timeout_sec
 
     # Plain mode has no virtual-user identity to isolate, so it keeps the client
@@ -776,6 +811,7 @@ async def worker(
                 config,
                 trace_ctx,
                 expected_length_ref,
+                read_body=read_body,
                 transport_errors=backend.transport_errors,
             )
             if result.cancelled:
@@ -818,6 +854,7 @@ async def user_worker(
     logger.debug("User %d starting", user_id)
     req_headers = _build_request_headers(config)
     expected_length_ref: list[int | None] = [None]
+    read_body = needs_body(config)
     active_users.count += 1
     client_timeout = config.timeout_sec
     interval_start = start_time
@@ -859,6 +896,7 @@ async def user_worker(
                     config,
                     trace_ctx,
                     expected_length_ref,
+                    read_body=read_body,
                     log_prefix=f"User {user_id} ",
                     transport_errors=backend.transport_errors,
                 )
@@ -1186,6 +1224,7 @@ async def scenario_worker(
                         assertions=step.assertions,
                         log_prefix=f"Scenario user {user_id} step '{step_name}' ",
                         capture_response=bool(step.extract),
+                        read_body=needs_body(config, step),
                         transport_errors=backend.transport_errors,
                     )
                     if result.cancelled:

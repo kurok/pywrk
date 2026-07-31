@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--no-read-body`** releases the connection instead of reading the response body, for runs where nothing looks at it. Opt-in, and the README states why: measured, avoiding the allocation saves *nothing* (a control that waits for the body without building an object is slower than reading at every size), the apparent ~5% gain is the run no longer timing receipt of the response, and on a 1.2 MiB payload it is 15% *slower*. Anything that inspects the body — an `extract` rule, a body assertion, `--verify-length`, `-v 3` — reads it regardless, decided per step so a scenario can mix both kinds. `--http2` is unaffected, since httpx has already read the body by the time its send returns. (#217)
+- With the flag on, `total_bytes` and `transfer_per_sec_bytes` count only what was read, and `--json` records `config.read_body` so a zero is never ambiguous. `pywrkr compare` warns when one run read bodies and the other did not, rather than reporting the transfer-rate collapse as a regression. (#217)
+
+### Fixed
+
+- `pywrkr compare` no longer reports a config difference for a field absent from either results file. An unrecorded value cannot differ from anything, and without this every field added to the config snapshot would make older baselines warn about themselves. (#217)
+
 - **Per-step thresholds**: `--threshold "step:checkout p95 < 800ms"`. For a scenario the aggregate `p95` is a blend of every step, so a flow whose login is 1ms and whose payment call is 250ms passes an aggregate budget while the step that matters is five times over it — and adding fast steps *improves* the number. Every metric the aggregate form accepts works per step, evaluated against that step's own samples and errors. The step name runs from `step:` to the metric, so the default `METHOD /path` naming needs no quoting despite its spaces. (#216)
 - A `step:` threshold naming a step the scenario does not define, or given without `--scenario` at all, is rejected **before any load is applied**, with different messages because they need different fixes; the unknown-name error lists the names that do exist. A step that exists but never ran reports `not measured` and fails, as does one whose name was folded into `[other steps]` by the distributed step-name cap — it cannot report on data it cannot see. (#216)
 

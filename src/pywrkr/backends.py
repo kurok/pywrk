@@ -95,11 +95,19 @@ class BackendSession(ABC):
         body: "bytes | None",
         timeout_sec: float,
         trace_ctx: "dict | None" = None,
+        read_body: bool = True,
     ) -> BackendResponse:
-        """Send one request and return the full response.
+        """Send one request and return the response.
 
         *trace_ctx* being non-None means the caller wants a latency breakdown;
         a backend that cannot produce one ignores it.
+
+        *read_body* False means the caller will not look at the body, so the
+        backend may release the connection instead of reading it. The response's
+        ``body`` is then empty, and the latency no longer covers receiving it --
+        see :func:`pywrkr.workers.needs_body`. A backend that cannot skip the
+        read ignores the hint and reads anyway; nothing downstream depends on
+        the body being absent.
         """
 
     @abstractmethod
@@ -264,6 +272,7 @@ class AiohttpSession(BackendSession):
         body: "bytes | None",
         timeout_sec: float,
         trace_ctx: "dict | None" = None,
+        read_body: bool = True,
     ) -> BackendResponse:
         async with self._session.request(
             method,
@@ -274,7 +283,15 @@ class AiohttpSession(BackendSession):
             timeout=self._client_timeout(timeout_sec),
             trace_request_ctx=trace_ctx,
         ) as resp:
-            data = await resp.read()
+            if read_body:
+                data = await resp.read()
+            else:
+                # Releases the connection back to the pool, draining whatever is
+                # outstanding in the background. Keep-alive is preserved -- an
+                # HTTP/1.1 connection has to be drained before it can carry the
+                # next response either way, so the bytes still cross the wire.
+                resp.release()
+                data = b""
             version = resp.version
             return BackendResponse(
                 status=resp.status,
@@ -399,7 +416,11 @@ class HttpxSession(BackendSession):
         body: "bytes | None",
         timeout_sec: float,
         trace_ctx: "dict | None" = None,
+        read_body: bool = True,
     ) -> BackendResponse:
+        # read_body is accepted and ignored: httpx's non-streaming send has
+        # already read the body by the time it returns, so there is nothing to
+        # skip. Documented rather than silently different.
         timeout = self._httpx.Timeout(timeout_sec)
         request = self._client.build_request(
             method, url, headers=headers, content=body, timeout=timeout

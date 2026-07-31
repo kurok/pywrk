@@ -201,6 +201,15 @@ def _add_core_options(parser: argparse.ArgumentParser) -> None:
         help="Path to CA bundle for SSL verification (or set PYWRKR_CA_BUNDLE)",
     )
     parser.add_argument(
+        "--no-read-body",
+        action="store_true",
+        default=False,
+        help="Release the connection instead of reading the response body. "
+        "Opt-in because it changes what is measured: a released response's "
+        "latency excludes receiving it, and total_bytes counts only what was "
+        "read. Steps that inspect the body still read it. See the README",
+    )
+    parser.add_argument(
         "-R",
         "--random-param",
         action="store_true",
@@ -1673,6 +1682,7 @@ def _parse_and_validate_args(
         strict_config=args.strict_config,
         compare_format=args.compare_format,
         websocket=_build_websocket_config(parser, args),
+        read_body=not args.no_read_body,
     )
 
     _validate_step_thresholds(parser, config)
