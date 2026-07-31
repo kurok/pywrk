@@ -243,10 +243,22 @@ def compute_percentiles(latencies: list[float]) -> list[tuple[float, float]]:
 # Threshold support (SLO pass/fail)
 # ---------------------------------------------------------------------------
 
+#: The metrics a threshold can name, aggregate or per step.
+_THRESHOLD_METRICS = "p50|p75|p90|p95|p99|avg_latency|max_latency|min_latency|error_rate|rps"
+
 _THRESHOLD_PATTERN = re.compile(
-    r"^\s*(p50|p75|p90|p95|p99|avg_latency|max_latency|min_latency|error_rate|rps)"
+    rf"^\s*({_THRESHOLD_METRICS})"
     r"\s*(<=?|>=?)\s*"
     r"([0-9]*\.?[0-9]+)\s*(ms|s|us|%)?\s*$"
+)
+
+#: ``step:<name> <metric> <op> <value>``. The step name is non-greedy and the
+#: metric alternation anchors where it ends, so a name containing spaces --
+#: which the default `METHOD /path` naming produces -- still parses.
+_STEP_THRESHOLD_PATTERN = re.compile(
+    rf"^\s*step:\s*(?P<step>.+?)\s+(?P<metric>{_THRESHOLD_METRICS})"
+    r"\s*(?P<op><=?|>=?)\s*"
+    r"(?P<value>[0-9]*\.?[0-9]+)\s*(?P<unit>ms|s|us|%)?\s*$"
 )
 
 _LATENCY_METRICS = {"p50", "p75", "p90", "p95", "p99", "avg_latency", "max_latency", "min_latency"}
@@ -255,7 +267,25 @@ _PERCENTILE_MAP = {"p50": 50, "p75": 75, "p90": 90, "p95": 95, "p99": 99}
 
 
 def parse_threshold(expr: str) -> "Threshold":
-    """Parse a threshold expression like 'p95 < 300ms' into a Threshold."""
+    """Parse a threshold expression into a Threshold.
+
+    Accepts an aggregate form, ``p95 < 300ms``, and a per-step form,
+    ``step:checkout p95 < 800ms``. For a scenario the aggregate is a blend of
+    every step, so adding fast steps improves it while the step that matters
+    stays out of budget; the per-step form is the one that expresses the SLO.
+    """
+    step: "str | None" = None
+    m = _STEP_THRESHOLD_PATTERN.match(expr)
+    if m:
+        step = m.group("step").strip()
+        if not step:
+            raise ValueError(f"Invalid threshold expression, empty step name: {expr!r}")
+        metric = m.group("metric")
+        operator = m.group("op")
+        raw_value = m.group("value")
+        unit = m.group("unit")
+        return _finish_threshold(expr, metric, operator, raw_value, unit, step)
+
     m = _THRESHOLD_PATTERN.match(expr)
     if not m:
         raise ValueError(f"Invalid threshold expression: {expr!r}")
@@ -294,6 +324,18 @@ def parse_threshold(expr: str) -> "Threshold":
     return Threshold(metric=metric, operator=operator, value=value, raw_expr=expr.strip())
 
 
+def _finish_threshold(expr, metric, operator, raw_value, unit, step):
+    """Convert units and build a Threshold, sharing the aggregate form's rules."""
+    parsed = parse_threshold(f"{metric} {operator} {raw_value}{unit or ''}")
+    return Threshold(
+        metric=metric,
+        operator=operator,
+        value=parsed.value,
+        raw_expr=expr.strip(),
+        step=step,
+    )
+
+
 def evaluate_thresholds(
     thresholds: "list[Threshold]",
     stats: "WorkerStats",
@@ -323,10 +365,59 @@ def evaluate_thresholds(
 
     results: list[tuple[Threshold, "float | None", bool]] = []
     for th in thresholds:
-        actual = _get_metric_value(th.metric, stats, duration, pct_map)
+        if th.step is not None:
+            actual = _get_step_metric_value(th, stats, duration)
+        else:
+            actual = _get_metric_value(th.metric, stats, duration, pct_map)
         passed = actual is not None and compare_threshold(actual, th.operator, th.value)
         results.append((th, actual, passed))
     return results
+
+
+def _get_step_metric_value(
+    threshold: "Threshold", stats: "WorkerStats", duration: float
+) -> "float | None":
+    """One step's own metric, or None when that step produced nothing.
+
+    None rather than a zero for the same reason as the aggregate path: a typo in
+    the step name, or a step that never ran because an earlier one aborted the
+    iteration, must not read as a satisfied threshold.
+    """
+    step = threshold.step or ""
+    samples = stats.step_latencies.get(step)
+    errors = stats.step_errors.get(step, 0)
+
+    if threshold.metric == "error_rate":
+        attempts = (len(samples) if samples else 0) + errors
+        return (errors / attempts * 100) if attempts else None
+    if threshold.metric == "rps":
+        count = (len(samples) if samples else 0) + errors
+        return count / duration if duration > 0 and count else None
+    if not samples:
+        return None
+
+    pct_map = dict(compute_percentiles(list(samples)))
+    return _get_metric_value(
+        threshold.metric,
+        _StepStatsView(samples),
+        duration,
+        pct_map,
+    )
+
+
+class _StepStatsView:
+    """Just enough of a WorkerStats for the shared metric reader.
+
+    Reusing :func:`_get_metric_value` rather than reimplementing avg/min/max is
+    what keeps a per-step p95 and an aggregate p95 meaning the same thing.
+    """
+
+    __slots__ = ("latencies", "total_requests", "errors")
+
+    def __init__(self, samples) -> None:
+        self.latencies = list(samples)
+        self.total_requests = len(self.latencies)
+        self.errors = 0
 
 
 def _get_metric_value(
@@ -394,12 +485,13 @@ def print_threshold_results(
         return
     print(file=file)
     print("  SLO Threshold Results:", file=file)
-    print(f"  {'Expression':<30} {'Actual':>12}   {'Status':>6}", file=file)
-    print(f"  {'-' * 30} {'-' * 12}   {'-' * 6}", file=file)
+    width = max(30, max(len(th.raw_expr) for th, _, _ in results))
+    print(f"  {'Expression':<{width}} {'Actual':>12}   {'Status':>6}", file=file)
+    print(f"  {'-' * width} {'-' * 12}   {'-' * 6}", file=file)
     for th, actual, passed in results:
         status = "PASS" if passed else "FAIL"
         actual_str = format_threshold_actual(th.metric, actual)
-        print(f"  {th.raw_expr:<30} {actual_str:>12}   {status:>6}", file=file)
+        print(f"  {th.raw_expr:<{width}} {actual_str:>12}   {status:>6}", file=file)
 
     all_passed = all(passed for _, _, passed in results)
     summary = "ALL PASSED" if all_passed else "SOME FAILED"

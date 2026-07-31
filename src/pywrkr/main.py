@@ -1383,6 +1383,37 @@ def _validate_load_params(
     return duration
 
 
+def _validate_step_thresholds(parser: argparse.ArgumentParser, config: BenchmarkConfig) -> None:
+    """Reject a `step:` threshold that cannot mean anything.
+
+    Both failures are caught here, before any load is applied, and they are
+    reported separately because they need different fixes: a name the scenario
+    does not define is a typo, while no scenario at all is the wrong mode.
+    Leaving either to the gate would report it as an unmeasured metric at the
+    end of a run that need not have happened.
+    """
+    step_thresholds = [t for t in config.thresholds if t.step is not None]
+    if not step_thresholds:
+        return
+
+    if config.scenario is None:
+        names = ", ".join(sorted({t.step or "" for t in step_thresholds}))
+        parser.error(
+            f"--threshold 'step:{names} ...' needs --scenario: there are no steps to measure "
+            "without one"
+        )
+
+    known = {step.name or f"{step.method} {step.path}" for step in config.scenario.steps}
+    unknown = sorted({t.step or "" for t in step_thresholds if t.step not in known})
+    if unknown:
+        parser.error(
+            "--threshold names step(s) the scenario does not define: "
+            + ", ".join(repr(name) for name in unknown)
+            + ". Known steps: "
+            + ", ".join(repr(name) for name in sorted(known))
+        )
+
+
 def _validate_rate_and_traffic(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -1644,6 +1675,7 @@ def _parse_and_validate_args(
         websocket=_build_websocket_config(parser, args),
     )
 
+    _validate_step_thresholds(parser, config)
     _validate_rate_and_traffic(parser, args, config)
 
     # Scenario mode defaults to 10s if no duration/count is specified
