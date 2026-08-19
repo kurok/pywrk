@@ -18,20 +18,20 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-from pywrkr import workers
-from pywrkr.config import (
-    BenchmarkConfig,
-    SSLConfig,
-    WorkerStats,
-    merge_stats,
-)
-from pywrkr.distributed import (
-    _deserialize_config,
-    _deserialize_stats,
-    _serialize_config,
-    _serialize_stats,
-)
-from pywrkr.workers import _build_request_headers, _create_ssl_context
+
+# Reached via attribute access rather than a second `from pywrkr... import`
+# statement, since CodeQL flags a module imported both ways (py/import-and-import-from).
+workers = pywrkr.workers
+BenchmarkConfig = pywrkr.config.BenchmarkConfig
+SSLConfig = pywrkr.config.SSLConfig
+WorkerStats = pywrkr.config.WorkerStats
+merge_stats = pywrkr.config.merge_stats
+_deserialize_config = pywrkr.distributed._deserialize_config
+_deserialize_stats = pywrkr.distributed._deserialize_stats
+_serialize_config = pywrkr.distributed._serialize_config
+_serialize_stats = pywrkr.distributed._serialize_stats
+_build_request_headers = pywrkr.workers._build_request_headers
+_create_ssl_context = pywrkr.workers._create_ssl_context
 
 # ---------------------------------------------------------------------------
 # SSLConfig tests

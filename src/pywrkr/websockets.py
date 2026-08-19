@@ -35,7 +35,7 @@ import ssl
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiohttp
@@ -44,9 +44,11 @@ from pywrkr.config import (
     BenchmarkConfig,
     WorkerStats,
     WsStats,
+    _setup_signal_handlers,
     merge_stats,
     merge_ws_stats,
 )
+from pywrkr.reporting import ws_results_section  # noqa: F401 -- re-exported, see __all__
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pywrkr.config import WebSocketConfig
@@ -79,74 +81,6 @@ DEFAULT_CLOSE_TIMEOUT = 5.0
 def is_websocket_url(url: str) -> bool:
     """True when *url* should be benchmarked as a WebSocket."""
     return urlparse(url).scheme in WS_SCHEMES
-
-
-def _latency_summary(samples: "Sequence[float]") -> dict:
-    """Min/mean/max plus percentiles for one WebSocket latency family."""
-    import math
-    import statistics
-
-    from pywrkr.reporting import compute_percentiles
-
-    finite = [x for x in samples if math.isfinite(x)]
-    if not finite:
-        return {}
-    pct_pairs = compute_percentiles(finite)
-    return {
-        "count": len(finite),
-        "min": round(min(finite), 6),
-        "max": round(max(finite), 6),
-        "mean": round(statistics.mean(finite), 6),
-        "percentiles": {f"p{p}": round(v, 6) for p, v in pct_pairs},
-    }
-
-
-def ws_results_section(ws: WsStats, duration: float) -> dict:
-    """The ``websocket`` block of the results file.
-
-    Documented schema (all keys always present so a CI consumer can rely on
-    them; ``handshake``/``rtt`` are ``{}`` when nothing was measured)::
-
-        websocket:
-          latency_metric: "rtt" | "handshake"   # which metric percentiles/ describe
-          primary_metric: "messages" | "connections"  # what total_requests counts
-          connections: {opened, failed, dropped, reconnects, peak_concurrent}
-          messages: {sent, received, sent_per_sec, received_per_sec,
-                     bytes_sent, bytes_received, reply_timeouts,
-                     unexpected_replies}
-          handshake: {count, min, max, mean, percentiles: {...}}
-          rtt:       {count, min, max, mean, percentiles: {...}}
-          close: {frames_sent, unacknowledged, codes: {"1000": n, ...}}
-    """
-    per_sec = (lambda n: round(n / duration, 2)) if duration > 0 else (lambda n: 0.0)
-    return {
-        "latency_metric": ws.latency_metric,
-        "primary_metric": ws.primary_metric,
-        "connections": {
-            "opened": ws.connections_opened,
-            "failed": ws.connections_failed,
-            "dropped": ws.connections_dropped,
-            "reconnects": ws.reconnects,
-            "peak_concurrent": ws.peak_concurrent,
-        },
-        "messages": {
-            "sent": ws.messages_sent,
-            "received": ws.messages_received,
-            "sent_per_sec": per_sec(ws.messages_sent),
-            "received_per_sec": per_sec(ws.messages_received),
-            "bytes_sent": ws.bytes_sent,
-            "bytes_received": ws.bytes_received,
-            "reply_timeouts": ws.reply_timeouts,
-            "unexpected_replies": ws.unexpected_replies,
-        },
-        "handshake": _latency_summary(ws.handshake_latencies),
-        "rtt": _latency_summary(ws.rtt_latencies),
-        "close": {
-            "frames_sent": ws.close_frames_sent,
-            "unacknowledged": ws.close_unacked,
-            "codes": dict(ws.close_codes),
-        },
-    }
 
 
 def connection_start_times(count: int, ramp_up: float) -> list[float]:
@@ -415,7 +349,7 @@ async def _first_of(waiter, task: "asyncio.Task") -> None:
         if not pending_waiter.done():
             pending_waiter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await pending_waiter
+                _ = await pending_waiter
 
 
 async def _drain_reader(reader: "asyncio.Task | None", timeout: float) -> None:
@@ -427,7 +361,7 @@ async def _drain_reader(reader: "asyncio.Task | None", timeout: float) -> None:
     except (asyncio.TimeoutError, asyncio.CancelledError):
         reader.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await reader
+            _ = await reader
 
 
 async def _send_loop(
@@ -511,7 +445,6 @@ async def run_websocket_benchmark(
         run_baseline_gate,
         run_observability_exports,
     )
-    from pywrkr.workers import _setup_signal_handlers
 
     ws_config = config.websocket
     if ws_config is None:  # pragma: no cover - the CLI always supplies one
@@ -561,7 +494,7 @@ async def run_websocket_benchmark(
         for task in (timer, stamper):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                await task  # lgtm[py/ineffectual-statement] -- Task[None], nothing to bind
     finally:
         stop.set()
         await session.close()

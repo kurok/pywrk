@@ -107,7 +107,7 @@ class TestFormatSummary(unittest.TestCase):
         self.assertEqual(len(lines), 4)
         self.assertIn("Test", lines[0])
         self.assertIn("p95", lines[0])
-        self.assertTrue(set(lines[1]) == {"-"})
+        self.assertEqual(set(lines[1]), {"-"})
         self.assertTrue(lines[2].startswith("test_a"))
 
     def test_the_columns_line_up_across_rows(self):

@@ -11,7 +11,7 @@ import statistics
 import sys
 from collections import defaultdict
 from string import Template
-from typing import TYPE_CHECKING, NamedTuple, TextIO
+from typing import TYPE_CHECKING, NamedTuple, Sequence, TextIO
 from urllib.parse import urlparse
 
 from pywrkr.compare import (
@@ -703,8 +703,6 @@ def build_results_dict(
         if rate_limiter is not None:
             result["rate_limit_waits"] = rate_limiter.waits
     if stats.ws is not None:
-        from pywrkr.websockets import ws_results_section
-
         result["websocket"] = ws_results_section(stats.ws, duration)
     finite_latencies = [x for x in stats.latencies if math.isfinite(x)]
     if finite_latencies:
@@ -1378,6 +1376,69 @@ def run_observability_exports(
     if config.prom_remote_write:
         ok = export_to_prometheus(results, config.prom_remote_write, config.tags) and ok
     return ok
+
+
+def _latency_summary(samples: "Sequence[float]") -> dict:
+    """Min/mean/max plus percentiles for one WebSocket latency family."""
+    finite = [x for x in samples if math.isfinite(x)]
+    if not finite:
+        return {}
+    pct_pairs = compute_percentiles(finite)
+    return {
+        "count": len(finite),
+        "min": round(min(finite), 6),
+        "max": round(max(finite), 6),
+        "mean": round(statistics.mean(finite), 6),
+        "percentiles": {f"p{p}": round(v, 6) for p, v in pct_pairs},
+    }
+
+
+def ws_results_section(ws: "WsStats", duration: float) -> dict:
+    """The ``websocket`` block of the results file.
+
+    Documented schema (all keys always present so a CI consumer can rely on
+    them; ``handshake``/``rtt`` are ``{}`` when nothing was measured)::
+
+        websocket:
+          latency_metric: "rtt" | "handshake"   # which metric percentiles/ describe
+          primary_metric: "messages" | "connections"  # what total_requests counts
+          connections: {opened, failed, dropped, reconnects, peak_concurrent}
+          messages: {sent, received, sent_per_sec, received_per_sec,
+                     bytes_sent, bytes_received, reply_timeouts,
+                     unexpected_replies}
+          handshake: {count, min, max, mean, percentiles: {...}}
+          rtt:       {count, min, max, mean, percentiles: {...}}
+          close: {frames_sent, unacknowledged, codes: {"1000": n, ...}}
+    """
+    per_sec = (lambda n: round(n / duration, 2)) if duration > 0 else (lambda n: 0.0)
+    return {
+        "latency_metric": ws.latency_metric,
+        "primary_metric": ws.primary_metric,
+        "connections": {
+            "opened": ws.connections_opened,
+            "failed": ws.connections_failed,
+            "dropped": ws.connections_dropped,
+            "reconnects": ws.reconnects,
+            "peak_concurrent": ws.peak_concurrent,
+        },
+        "messages": {
+            "sent": ws.messages_sent,
+            "received": ws.messages_received,
+            "sent_per_sec": per_sec(ws.messages_sent),
+            "received_per_sec": per_sec(ws.messages_received),
+            "bytes_sent": ws.bytes_sent,
+            "bytes_received": ws.bytes_received,
+            "reply_timeouts": ws.reply_timeouts,
+            "unexpected_replies": ws.unexpected_replies,
+        },
+        "handshake": _latency_summary(ws.handshake_latencies),
+        "rtt": _latency_summary(ws.rtt_latencies),
+        "close": {
+            "frames_sent": ws.close_frames_sent,
+            "unacknowledged": ws.close_unacked,
+            "codes": dict(ws.close_codes),
+        },
+    }
 
 
 #: What ``WorkerStats.latencies`` holds in each WebSocket shape, spelled out

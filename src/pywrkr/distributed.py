@@ -632,12 +632,11 @@ class _MasterExporter:
         self._task = asyncio.create_task(self._loop())
 
     async def _loop(self) -> None:
-        loop = asyncio.get_running_loop()
         while not self._stop.is_set():
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
                 return
-            self._export(loop.time(), final=False)
+            self._export(asyncio.get_running_loop().time(), final=False)
 
     async def aclose(self, now: float) -> None:
         """Emit a final cluster snapshot and stop.
@@ -651,7 +650,7 @@ class _MasterExporter:
         self._export(now, final=True)
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await self._task
+            _ = await self._task
         self._task = None
 
     def _export(self, now: float, final: bool) -> None:
@@ -1083,7 +1082,7 @@ class _ProgressReporter:
             await asyncio.wait_for(self._queue.join(), timeout=5.0)
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await self._task
+            _ = await self._task
         self._task = None
         if self.dropped or self.failed:
             logger.warning(
