@@ -19,18 +19,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # python: this repo's source and tests.
-          - language: python
-            build-mode: autobuild
+        language:
+          # python: this repo's source and tests. No build step: CodeQL's
+          # python extractor works straight off the source, and current
+          # codeql-action versions reject build-mode: autobuild for it.
+          - python
           # actions: the workflow YAML under .github/workflows/ itself. This
           # replaces the "actions" language coverage that Default setup used
           # to provide before it was superseded by this workflow -- Default
           # setup and an Advanced-setup workflow can't cover the same
           # language at once, and its last scan (see the Code Scanning
           # "Tools" page) had gone stale since.
-          - language: actions
-            build-mode: none
+          - actions
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -39,12 +39,8 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
           queries: security-and-quality
-
-      - name: Autobuild
-        if: matrix.build-mode == 'autobuild'
-        uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
