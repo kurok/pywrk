@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import random
+import signal
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
@@ -1109,3 +1111,15 @@ def load_scenario(path: str) -> Scenario:
         path,
     )
     return scenario
+
+
+# ---------------------------------------------------------------------------
+# Shared runner helpers
+# ---------------------------------------------------------------------------
+
+
+def _setup_signal_handlers(stop_event: asyncio.Event) -> None:
+    """Register SIGINT/SIGTERM handlers that set the stop event."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)

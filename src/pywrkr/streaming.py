@@ -141,7 +141,7 @@ class StreamingExporter:
         all_stats: list[WorkerStats],
         interval: float,
         *,
-        active_users: "ActiveUsers | None" = None,
+        active_users: ActiveUsers | None = None,
         rate_limiter: "RateLimiter | None" = None,
         start_time: "float | None" = None,
         queue_size: int = _QUEUE_SIZE,
@@ -217,7 +217,7 @@ class StreamingExporter:
             task.cancel()
         for task in self._tasks:
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                _ = await task
         self._tasks = []
 
     # -- sampling ----------------------------------------------------------

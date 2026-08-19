@@ -11,13 +11,17 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-from pywrkr.main import _build_parser, _parse_and_validate_args
-from pywrkr.streaming import (
-    MIN_EXPORT_INTERVAL,
-    Snapshot,
-    StreamingExporter,
-    window_percentiles,
-)
+import pywrkr.main
+import pywrkr.streaming
+
+# Reached via attribute access rather than a `from pywrkr... import` statement,
+# since CodeQL flags a module imported both ways (py/import-and-import-from).
+_build_parser = pywrkr.main._build_parser
+_parse_and_validate_args = pywrkr.main._parse_and_validate_args
+MIN_EXPORT_INTERVAL = pywrkr.streaming.MIN_EXPORT_INTERVAL
+Snapshot = pywrkr.streaming.Snapshot
+StreamingExporter = pywrkr.streaming.StreamingExporter
+window_percentiles = pywrkr.streaming.window_percentiles
 
 # ---------------------------------------------------------------------------
 # Windowing math

@@ -402,7 +402,7 @@ class TestFeederCursor(unittest.TestCase):
     def test_random_stays_in_the_set_and_never_runs_dry(self):
         cursor = FeederCursor(make_feeder("random"))
         values = {cursor.next_row()["i"] for _ in range(50)}
-        self.assertTrue(values <= {"0", "1", "2"})
+        self.assertLessEqual(values, {"0", "1", "2"})
         self.assertFalse(cursor.exhausted)
 
     def test_empty_feeder_is_immediately_exhausted(self):
