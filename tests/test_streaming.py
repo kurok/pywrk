@@ -380,8 +380,6 @@ class TestAutofindExportPropagation(unittest.TestCase):
 
 async def _run_one_autofind_step(af_config, users):
     """Drive a single autofind step, to inspect the config it builds."""
-    from pywrkr import workers
-
     config = pywrkr.BenchmarkConfig(
         url=af_config.url,
         users=users,
@@ -399,7 +397,7 @@ async def _run_one_autofind_step(af_config, users):
         tags={**af_config.tags, "step_users": str(users)},
         _quiet=True,
     )
-    await workers.run_user_simulation(config)
+    await pywrkr.workers.run_user_simulation(config)
 
 
 # ---------------------------------------------------------------------------

@@ -6036,7 +6036,7 @@ class TestCreateSslContext(unittest.TestCase):
     """Cover SSL context with custom CA bundle."""
 
     def test_ssl_with_ca_bundle(self):
-        from pywrkr.workers import _create_ssl_context
+        from pywrkr.backends import build_ssl_context as _create_ssl_context
 
         config = pywrkr.BenchmarkConfig(
             url="https://example.com",
@@ -6109,7 +6109,7 @@ class TestTraceBreakdownEdgeCases(unittest.TestCase):
 
     def test_create_trace_config_returns_config(self):
         """Trace config should be created successfully."""
-        from pywrkr.workers import create_trace_config
+        from pywrkr.backends import create_trace_config
 
         stats = pywrkr.WorkerStats()
         trace_cfg = create_trace_config(stats)

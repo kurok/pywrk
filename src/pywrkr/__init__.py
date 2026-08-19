@@ -319,7 +319,7 @@ _DEPRECATED_ATTRS = {
     "user_worker": "pywrkr.workers",
     "scenario_worker": "pywrkr.workers",
     "show_progress": "pywrkr.workers",
-    "create_trace_config": "pywrkr.workers",
+    "create_trace_config": "pywrkr.backends",
     "make_url": "pywrkr.workers",
     "LiveDashboard": "pywrkr.workers",
 }
