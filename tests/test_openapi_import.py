@@ -828,7 +828,8 @@ class TestCli(unittest.TestCase):
         path = os.path.join(self.dir, "scenario.json")
         out, _ = self.run_cli("-o", path)
         self.assertIn("Wrote scenario to", out)
-        self.assertEqual(json.loads(open(path).read())["name"], "Widget API")
+        with open(path) as f:
+            self.assertEqual(json.load(f)["name"], "Widget API")
 
     def test_the_url_file_format(self):
         out, _ = self.run_cli("--format", "url-file")

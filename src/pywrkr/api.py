@@ -269,7 +269,7 @@ def _build_config(target: "str | BenchmarkConfig", kwargs: dict[str, Any]) -> Be
 async def arun(
     target: "str | BenchmarkConfig",
     *,
-    on_tick: "Callable[[LiveStats], None] | None" = None,
+    on_tick: Callable[[LiveStats], None] | None = None,
     **kwargs: Any,
 ) -> Result:
     """Run a benchmark and return its :class:`Result`.
@@ -319,7 +319,7 @@ async def arun(
 def run(
     target: "str | BenchmarkConfig",
     *,
-    on_tick: "Callable[[LiveStats], None] | None" = None,
+    on_tick: Callable[[LiveStats], None] | None = None,
     **kwargs: Any,
 ) -> Result:
     """Blocking wrapper around :func:`arun`, for scripts and test suites.

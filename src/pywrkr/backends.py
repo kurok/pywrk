@@ -21,6 +21,7 @@ HTTP/3 backend slots in here without touching the worker loop.
 from __future__ import annotations
 
 import asyncio
+import logging
 import ssl
 import time
 from abc import ABC, abstractmethod
@@ -34,6 +35,8 @@ from pywrkr.config import LatencyBreakdown, WorkerStats
 
 if TYPE_CHECKING:
     from pywrkr.config import BenchmarkConfig, SSLConfig
+
+_logger = logging.getLogger(__name__)
 
 #: Backend identifiers accepted internally.
 BACKEND_AIOHTTP = "aiohttp"
@@ -81,10 +84,12 @@ class BackendSession(ABC):
     """One virtual user's client: its own cookies, a shared connection pool."""
 
     @abstractmethod
-    async def __aenter__(self) -> "BackendSession": ...
+    async def __aenter__(self) -> "BackendSession":
+        """Enter the session's context; usable as ``async with backend.create_session(...)``."""
 
     @abstractmethod
-    async def __aexit__(self, *exc_info) -> None: ...
+    async def __aexit__(self, *exc_info) -> None:
+        """Exit the session's context; individual backends decide whether this closes anything."""
 
     @abstractmethod
     async def send(
@@ -234,6 +239,116 @@ def normalize_http_version(raw: object) -> str:
 # ---------------------------------------------------------------------------
 
 
+def create_trace_config(stats: WorkerStats) -> aiohttp.TraceConfig:
+    """Create an aiohttp TraceConfig that captures per-request latency breakdown.
+
+    The trace context (a dict) stores timing data per request. When the request
+    ends, a LatencyBreakdown is computed and appended to stats.breakdowns.
+    """
+    trace_config = aiohttp.TraceConfig()
+
+    async def on_request_start(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["request_start"] = time.monotonic()
+        ctx["dns_start"] = None
+        ctx["dns_end"] = None
+        ctx["conn_start"] = None
+        ctx["conn_end"] = None
+        ctx["headers_sent"] = None
+        ctx["first_byte"] = None
+        ctx["is_reused"] = True  # assume reused; set to False if we see connection creation
+
+    async def on_dns_resolvehost_start(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["dns_start"] = time.monotonic()
+        ctx["is_reused"] = False
+
+    async def on_dns_resolvehost_end(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["dns_end"] = time.monotonic()
+
+    async def on_connection_create_start(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["conn_start"] = time.monotonic()
+        ctx["is_reused"] = False
+
+    async def on_connection_create_end(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["conn_end"] = time.monotonic()
+
+    async def on_request_headers_sent(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        ctx["headers_sent"] = time.monotonic()
+
+    async def on_response_chunk_received(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        if ctx.get("first_byte") is None:
+            ctx["first_byte"] = time.monotonic()
+
+    async def on_request_end(session, trace_ctx, params):
+        ctx = trace_ctx.trace_request_ctx
+        end = time.monotonic()
+
+        # Defensive: if on_request_start never fired, skip breakdown
+        if ctx.get("request_start") is None:
+            _logger.debug("Trace context missing 'request_start'; skipping breakdown")
+            return
+
+        # DNS time
+        dns = 0.0
+        if ctx.get("dns_start") is not None and ctx.get("dns_end") is not None:
+            dns = ctx["dns_end"] - ctx["dns_start"]
+
+        # TCP connect time (includes TLS if HTTPS)
+        connect_total = 0.0
+        if ctx.get("conn_start") is not None and ctx.get("conn_end") is not None:
+            connect_total = ctx["conn_end"] - ctx["conn_start"]
+
+        # NOTE: TLS time is an *estimate*.  aiohttp's connection_create
+        # callback spans TCP+TLS combined and does not provide a separate
+        # TLS-only signal.  The value reported here (currently 0.0) is a
+        # best-effort approximation; treat the ``tls`` field in
+        # LatencyBreakdown as ``tls_estimated`` in any analysis or reports.
+        tls = 0.0
+        tcp_connect = connect_total  # default: entire connect time is TCP
+
+        # TTFB: from headers_sent to first byte received
+        ttfb = 0.0
+        headers_sent = ctx.get("headers_sent")
+        first_byte = ctx.get("first_byte")
+        if headers_sent is not None and first_byte is not None:
+            ttfb = first_byte - headers_sent
+        elif headers_sent is not None:
+            # No chunks received (empty body) -- use end time
+            ttfb = end - headers_sent
+
+        # Transfer time: from first byte to end
+        transfer = 0.0
+        if first_byte is not None:
+            transfer = end - first_byte
+
+        bd = LatencyBreakdown(
+            dns=max(dns, 0.0),
+            connect=max(tcp_connect, 0.0),
+            tls=max(tls, 0.0),
+            ttfb=max(ttfb, 0.0),
+            transfer=max(transfer, 0.0),
+            is_reused=ctx.get("is_reused", True),
+        )
+        stats.breakdowns.append(bd)
+
+    trace_config.on_request_start.append(on_request_start)
+    trace_config.on_dns_resolvehost_start.append(on_dns_resolvehost_start)
+    trace_config.on_dns_resolvehost_end.append(on_dns_resolvehost_end)
+    trace_config.on_connection_create_start.append(on_connection_create_start)
+    trace_config.on_connection_create_end.append(on_connection_create_end)
+    trace_config.on_request_headers_sent.append(on_request_headers_sent)
+    trace_config.on_response_chunk_received.append(on_response_chunk_received)
+    trace_config.on_request_end.append(on_request_end)
+
+    return trace_config
+
+
 class AiohttpSession(BackendSession):
     """aiohttp ClientSession wrapper."""
 
@@ -340,8 +455,6 @@ class AiohttpBackend(Backend):
         return self._connector
 
     def create_session(self, stats: WorkerStats, isolate_cookies: bool = True) -> BackendSession:
-        from pywrkr.workers import create_trace_config
-
         jar = create_cookie_jar(self._config, isolate_cookies)
         kwargs: dict = {"connector": self._connector, "connector_owner": False}
         if self._config.latency_breakdown:

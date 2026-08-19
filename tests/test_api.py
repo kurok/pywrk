@@ -401,9 +401,6 @@ class TestSyncRun(AioHTTPTestCase):
         # called from a running loop.
         url = f"http://127.0.0.1:{self.server.port}/"
 
-        async def noop():
-            return None
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             result = _run_in_thread(url)

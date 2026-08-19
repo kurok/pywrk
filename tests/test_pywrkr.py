@@ -21,17 +21,20 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
-from pywrkr import workers
-from pywrkr.distributed import (
-    _deserialize_config,
-    _deserialize_stats,
-    _recv_msg,
-    _send_msg,
-    _serialize_config,
-    _serialize_stats,
-)
-from pywrkr.reporting import _format_latency_short, _html_escape
-from pywrkr.workers import _extract_step_result, _step_passed
+
+# Reached via attribute access rather than a second `from pywrkr... import`
+# statement, since CodeQL flags a module imported both ways (py/import-and-import-from).
+workers = pywrkr.workers
+_deserialize_config = pywrkr.distributed._deserialize_config
+_deserialize_stats = pywrkr.distributed._deserialize_stats
+_recv_msg = pywrkr.distributed._recv_msg
+_send_msg = pywrkr.distributed._send_msg
+_serialize_config = pywrkr.distributed._serialize_config
+_serialize_stats = pywrkr.distributed._serialize_stats
+_format_latency_short = pywrkr.reporting._format_latency_short
+_html_escape = pywrkr.reporting._html_escape
+_extract_step_result = pywrkr.workers._extract_step_result
+_step_passed = pywrkr.workers._step_passed
 
 # ---------------------------------------------------------------------------
 # Unit tests for refactored argument parser helpers
