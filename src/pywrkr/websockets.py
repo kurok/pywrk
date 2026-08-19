@@ -494,7 +494,7 @@ async def run_websocket_benchmark(
         for task in (timer, stamper):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task  # lgtm[py/ineffectual-statement] -- Task[None], nothing to bind
+                _ = await task  # type: ignore[func-returns-value]
     finally:
         stop.set()
         await session.close()

@@ -263,7 +263,7 @@ class TestStepLatencyOverflow:
 class TestCreateSSLContext:
     def test_ca_bundle_loading(self):
         """Line 321: HTTPS with custom ca_bundle."""
-        from pywrkr.workers import _create_ssl_context
+        from pywrkr.backends import build_ssl_context as _create_ssl_context
 
         config = BenchmarkConfig(
             url="https://example.com/",

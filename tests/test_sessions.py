@@ -14,8 +14,13 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
 import pywrkr
+from pywrkr.backends import (
+    create_cookie_jar as _create_cookie_jar,
+)
+from pywrkr.backends import (
+    target_is_ip_literal as _target_is_ip_literal,
+)
 from pywrkr.main import _build_parser
-from pywrkr.workers import _create_cookie_jar, _target_is_ip_literal
 
 # ---------------------------------------------------------------------------
 # Jar construction

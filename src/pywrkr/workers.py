@@ -18,18 +18,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 import aiohttp
 
 from pywrkr.assertions import StepAssertions, evaluate_assertions
-from pywrkr.backends import (
-    Backend,
-    BackendSession,
-    build_ssl_context,
-    create_backend,
-    create_cookie_jar,
-    # Lives in backends.py now (it's aiohttp-specific tracing plumbing), but
-    # stays importable from here: pywrkr.__init__._DEPRECATED_ATTRS and
-    # existing tests still reach it via ``pywrkr.workers``.
-    create_trace_config,  # noqa: F401
-    target_is_ip_literal,
-)
+from pywrkr.backends import Backend, BackendSession, create_backend
 from pywrkr.config import (
     _MAX_STEP_NAMES,
     ActiveUsers,
@@ -586,14 +575,6 @@ async def _execute_request(
         logger.warning("%sRequest error: %s: %s", log_prefix, error_name, e)
 
     return result
-
-
-# Cookie/SSL construction lives with the backends now, since each client library
-# builds them differently. Aliased here because these were part of this module's
-# surface before the split, and tests still import them from here.
-_target_is_ip_literal = target_is_ip_literal  # lgtm[py/unused-global-variable]
-_create_cookie_jar = create_cookie_jar  # lgtm[py/unused-global-variable]
-_create_ssl_context = build_ssl_context  # lgtm[py/unused-global-variable]
 
 
 async def _think_time_wait(

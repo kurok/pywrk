@@ -31,7 +31,7 @@ _deserialize_stats = pywrkr.distributed._deserialize_stats
 _serialize_config = pywrkr.distributed._serialize_config
 _serialize_stats = pywrkr.distributed._serialize_stats
 _build_request_headers = pywrkr.workers._build_request_headers
-_create_ssl_context = pywrkr.workers._create_ssl_context
+_create_ssl_context = pywrkr.backends.build_ssl_context
 
 # ---------------------------------------------------------------------------
 # SSLConfig tests
